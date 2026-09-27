@@ -118,13 +118,13 @@ func newTestCLI(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 }
 
-func TestDryRunShowsTheCommandAndRunsNothing(t *testing.T) {
+func TestDryRunFlagShowsTheCommandAndRunsNothing(t *testing.T) {
 	newTestCLI(t)
 	server := fakeTypeSafe(t)
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	code := realMain([]string{"--base-url", server.URL, "list all files in this directory"}, &stdout, &stderr)
+	code := realMain([]string{"--dry-run", "--base-url", server.URL, "list all files in this directory"}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("exit = %d, want 0\nstderr: %s", code, stderr.String())
 	}
@@ -139,13 +139,13 @@ func TestDryRunShowsTheCommandAndRunsNothing(t *testing.T) {
 	}
 }
 
-func TestExecuteRunsTheResolvedCommand(t *testing.T) {
+func TestTheDefaultIsToRunTheResolvedCommand(t *testing.T) {
 	newTestCLI(t)
 	server := fakeTypeSafe(t)
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	code := realMain([]string{"-x", "--base-url", server.URL, "list all files in this directory"}, &stdout, &stderr)
+	code := realMain([]string{"--base-url", server.URL, "list all files in this directory"}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("exit = %d\nstderr: %s", code, stderr.String())
 	}
@@ -161,7 +161,7 @@ func TestJSONModeKeepsStdoutClean(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	code := realMain([]string{"-x", "--json", "--base-url", server.URL, "liste todos os arquivos"}, &stdout, &stderr)
+	code := realMain([]string{"--json", "--base-url", server.URL, "list all the files"}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("exit = %d\nstderr: %s", code, stderr.String())
 	}
@@ -195,7 +195,7 @@ func TestADestructiveRequestIsRefused(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	code := realMain([]string{"-x", "--base-url", server.URL, "list the files and delete the old ones"}, &stdout, &stderr)
+	code := realMain([]string{"--base-url", server.URL, "list the files and delete the old ones"}, &stdout, &stderr)
 	if code != exitUnresolved {
 		t.Fatalf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, exitUnresolved, stdout.String(), stderr.String())
 	}
@@ -265,7 +265,7 @@ func TestForcedPathSkipsTheModel(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	code := realMain([]string{"-x", "--base-url", server.URL, "--path", dir, "list the files"}, &stdout, &stderr)
+	code := realMain([]string{"--base-url", server.URL, "--path", dir, "list the files"}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("exit = %d\nstderr: %s", code, stderr.String())
 	}
@@ -288,26 +288,33 @@ func TestUnknownFlagIsRejectedBeforeAnyCall(t *testing.T) {
 	}
 }
 
-func TestHelpMentionsTheDryRunDefault(t *testing.T) {
+func TestHelpDocumentsBothExecutionAndDryRun(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := realMain([]string{"--help"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("exit = %d", code)
 	}
-	if !strings.Contains(stdout.String(), "USAGE") {
-		t.Errorf("help output looks wrong:\n%s", stdout.String())
+	out := stdout.String()
+	if !strings.Contains(out, "USAGE") {
+		t.Errorf("help output looks wrong:\n%s", out)
+	}
+	for _, want := range []string{"--dry-run", "--execute"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help does not mention %s:\n%s", want, out)
+		}
 	}
 }
 
-// TestAGatedCommandNeverRunsEvenWithExecute is the safety property stated as
-// plainly as it can be: -x asks for execution, but a verdict other than "act"
-// means nothing runs, and the user still gets to see what would have run.
+// TestAGatedCommandNeverRuns is the safety property stated as plainly as it
+// can be. Running is now the default, so nothing but the verdict stands between
+// a phrase and a command: a verdict other than "act" must not run anything on
+// its own, and the user still gets to see what would have run.
 func TestAGatedCommandNeverRunsEvenWithExecute(t *testing.T) {
 	newTestCLI(t)
 	server := fakeTypeSafe(t)
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	code := realMain([]string{"-x", "--base-url", server.URL, "maybe list the files"}, &stdout, &stderr)
+	code := realMain([]string{"--base-url", server.URL, "maybe list the files"}, &stdout, &stderr)
 	if code != exitUnresolved {
 		t.Fatalf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, exitUnresolved, stdout.String(), stderr.String())
 	}
@@ -321,5 +328,22 @@ func TestAGatedCommandNeverRunsEvenWithExecute(t *testing.T) {
 	// Its absence is the proof that the command did not run.
 	if strings.Contains(stdout.String(), "main_test.go") {
 		t.Errorf("the gated command actually ran:\n%s", stdout.String())
+	}
+}
+
+// TestExplicitExecuteStillWorks keeps the flag meaningful for scripts that want
+// to spell out their intent, and checks that it cancels an earlier --dry-run.
+func TestExplicitExecuteStillWorks(t *testing.T) {
+	newTestCLI(t)
+	server := fakeTypeSafe(t)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := realMain([]string{"--dry-run", "-x", "--base-url", server.URL, "list all files in this directory"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit = %d\nstderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "main_test.go") {
+		t.Errorf("-x after --dry-run should execute:\n%s", stdout.String())
 	}
 }

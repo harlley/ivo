@@ -4,7 +4,7 @@ Turn a phrase in natural language into a shell command, without letting a
 language model write the command.
 
 ```console
-$ jev "list all files in this directory"
+$ jev --dry-run "list all files in this directory"
 $ ls .
   command               list_directory, confidence 1.00
   severity              0.08
@@ -14,9 +14,9 @@ $ ls .
   ls_sort_time          omitted: not mentioned (p=0.04)
   ls_sort_size          omitted: not mentioned (p=0.03)
   ls_recursive          omitted: not mentioned (p=0.15)
-dry-run: nothing ran. Pass -x to run it.
+dry-run: nothing ran. Run again without --dry-run to execute.
 
-$ jev -x "list all files in this directory"
+$ jev "list all files in this directory"
 cmd
 go.mod
 internal
@@ -42,7 +42,10 @@ something runnable. Both disappear here by construction.
   `exec.CommandContext`. There is no `sh -c`, so quotes, `;`, `|`, `$()` and
   backticks cannot become a second command.
 - **Code decides whether to run.** Calibrated confidence and probabilities
-  choose between acting, asking and refusing. The default is not to run.
+  choose between running, asking and refusing. A command runs only if the
+  choice was confident, the guardrails were satisfied, and the catalog entry is
+  read-only. Anything else stops and explains itself, and `--dry-run` shows the
+  command without running it.
 - **The vocabulary is closed.** A command that is not in the catalog is never
   invented. The honest answer is "I cannot do that", with the closest
   candidates and their probabilities.
@@ -81,10 +84,11 @@ jev [options] "phrase in natural language"
 
 | Option | Effect |
 | --- | --- |
-| (default) | dry run: show the resolved command and the decisions, then stop |
-| `-x`, `--execute` | run the resolved command |
+| (default) | run the resolved command |
+| `-n`, `--dry-run` | show the resolved command and the decisions, then stop |
+| `-x`, `--execute` | run the resolved command (already the default) |
 | `--allow-write` | allow commands that are not read-only |
-| `-j`, `--json` | JSON result; the command is captured instead of inherited |
+| `-j`, `--json` | JSON result; the executed command's output is captured |
 | `--path VALUE` | use this path, without asking the model |
 | `--pattern VALUE` | use this file name pattern |
 | `--term VALUE` | use this search text |
@@ -97,9 +101,9 @@ jev [options] "phrase in natural language"
 | `--timeout` | API call timeout, in seconds |
 | `--no-color` | no colours |
 
-With `-x`, the exit code of the executed command is propagated. Without `-x`:
-`0` success, `1` error, `2` unresolved (ambiguous or outside the catalog),
-`3` blocked by a guardrail, `4` no API key.
+The exit code of the executed command is propagated. jev-cli's own codes are
+`1` error, `2` unresolved (ambiguous or outside the catalog), `3` blocked by a
+guardrail, and `4` no API key.
 
 ## How it works
 
@@ -126,7 +130,7 @@ phrase
   +- CODE   read only the winning command's answers (catalog.Assemble)
   |           apply the gates, build the argv
   |
-  +- CODE   dry run by default; run with -x
+  +- CODE   run it, or stop and show it with --dry-run
 ```
 
 Every question goes in a single request. The model evaluates them in parallel,

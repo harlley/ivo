@@ -5,7 +5,11 @@
 // The command is never written by a language model. jev asks a System One
 // model (TypeSafe's jev) a set of typed questions about a fixed catalog of
 // commands and a fixed set of options, and this program assembles the argv
-// from the answers. Nothing is executed unless -x is passed.
+// from the answers.
+//
+// The command runs once the gates pass: the model was confident, the
+// guardrails were satisfied, and the catalog entry is read-only. Pass
+// --dry-run to see the resolved command without running it.
 package main
 
 import (
@@ -170,7 +174,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	if decision.Verdict != resolve.VerdictAct {
 		return renderNoCommand(printer, opts, plan, decision, result)
 	}
-	if !opts.execute {
+	if opts.dryRun {
 		return renderDryRun(printer, opts, plan, decision, result, allow)
 	}
 
@@ -214,7 +218,7 @@ func renderDryRun(p *ui.Printer, opts cliOptions, plan *resolve.Plan, d *resolve
 		p.Field("latency", fmt.Sprintf("%d ms (%d attempt(s))", res.Latency.Milliseconds(), res.Attempts))
 		p.Field("binaries", strings.Join(allow, ", "))
 	}
-	p.Hint("dry-run: nothing ran. Pass -x to run it.")
+	p.Hint("dry-run: nothing ran. Run again without --dry-run to execute.")
 	return exitOK
 }
 
@@ -424,7 +428,7 @@ func emitJSON(p *ui.Printer, plan *resolve.Plan, d *resolve.Decision, res *types
 // ---------------------------------------------------------------------------
 
 type cliOptions struct {
-	execute      bool
+	dryRun       bool
 	allowWrite   bool
 	json         bool
 	explain      bool
@@ -477,10 +481,13 @@ func parseArgs(args []string) (cliOptions, string, error) {
 
 		var err error
 		switch name {
+		case "-n", "--dry-run":
+			opts.dryRun = true
 		case "-x", "--execute":
-			opts.execute = true
-		case "--dry-run":
-			opts.execute = false
+			// Executing is the default. The flag stays for scripts that want
+			// to say so out loud, and it turns a --dry-run earlier in the
+			// argument list back off.
+			opts.dryRun = false
 		case "--allow-write":
 			opts.allowWrite = true
 		case "-j", "--json":
@@ -581,20 +588,22 @@ USAGE
 
 The command is never written by a language model. jev answers typed questions
 about a fixed catalog of commands and options, and this program assembles the
-argv from the answers. Nothing runs unless you ask for it.
+argv from the answers. It runs once the gates pass; --dry-run shows it without
+running anything.
 
 EXAMPLES
   jev "list all files in this directory"
-  jev -x "how much space does this directory take"
-  jev -x --path src --pattern '*.go' "find the go files under src"
+  jev --dry-run "how much space does this directory take"
+  jev --path src --pattern '*.go' "find the go files under src"
   jev --explain "show me the last commits"
   jev --commands
 
 EXECUTION
-  (default)                dry run: show the resolved command and stop
-  -x, --execute            run the resolved command
+  (default)                run the resolved command
+  -n, --dry-run            show the resolved command and stop, running nothing
+  -x, --execute            run the resolved command (already the default)
   --allow-write            allow commands that are not read-only
-  -j, --json               JSON result (the command is captured, not inherited)
+  -j, --json               JSON result; the executed command's output is captured
 
 EXPLICIT VALUES
   --path VALUE             use this path, without asking the model
@@ -624,5 +633,5 @@ CONFIG
 EXIT CODES
   0 success, 1 error, 2 unresolved (ambiguous or outside the catalog)
   3 blocked by a guardrail, 4 no API key
-  with -x, the exit code of the executed command is propagated
+  the exit code of the executed command is propagated
 `
