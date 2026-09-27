@@ -1,6 +1,7 @@
 package catalog_test
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -17,7 +18,7 @@ func testEnv() *env.Env {
 		bins[b] = true
 	}
 	return &env.Env{
-		Request: "liste todos os arquivos desse diretório",
+		Request: "list all files in this directory",
 		OS:      "darwin",
 		CWD:     "/tmp/projeto",
 		Home:    "/Users/test",
@@ -222,10 +223,11 @@ func TestCaseInsensitiveMatchIsUsedWhenAsked(t *testing.T) {
 
 func TestUnresolvableRequiredValueIsReportedNotGuessed(t *testing.T) {
 	e := testEnv()
-	// show_file has no fallback for its target: "print the current directory"
-	// is not a thing, so it must fail loudly rather than pick something.
+	// show_file cannot act on "no path at all", so that option is not even
+	// offered to it, the escape hatch is what an unresolvable target looks
+	// like, and it must fail loudly rather than pick something.
 	got := assemble(t, e, "show_file", map[string]typesafe.Answer{
-		"target_path": choice("no_path_filter", 0.9),
+		"target_path": choice(catalog.NoneKey, 0.9),
 	})
 	if len(got.Missing) != 1 || got.Missing[0] != "target_path" {
 		t.Fatalf("Missing = %v, want [target_path]", got.Missing)
@@ -524,6 +526,98 @@ func TestNoCommandCanReachAShell(t *testing.T) {
 		for _, tok := range spec.Argv {
 			if tok == "-c" {
 				t.Errorf("%s has a -c token, which is how a shell is told to run a string", cmd.ID)
+			}
+		}
+	}
+}
+
+// TestAnEmptyButValidOptionIsNotAnUnresolvedSlot is the regression test for
+// the bug the human-facing test sheet found: `git log` offers "no path at all",
+// which contributes no token by design, and that was being reported as
+// "could not determine: target_path".
+func TestAnEmptyButValidOptionIsNotAnUnresolvedSlot(t *testing.T) {
+	e := testEnv()
+	// Silence about a path means the whole repository.
+	got := assemble(t, e, "git_log", nil)
+	if len(got.Missing) != 0 {
+		t.Fatalf("Missing = %v, want none: the whole repository is a valid target", got.Missing)
+	}
+	if want := "git log -n 10 --"; strings.Join(got.Argv, " ") != want {
+		t.Errorf("argv = %q, want %q", got.Argv, want)
+	}
+
+	// Saying "no path at all" explicitly produces the same command, and is
+	// not mistaken for an unresolved slot.
+	got = assemble(t, e, "git_log", map[string]typesafe.Answer{
+		"git_target_path":  choice("no_path_filter", 0.9),
+		"git_target_path?": noul(0.9),
+	})
+	if len(got.Missing) != 0 {
+		t.Fatalf("Missing = %v, want none", got.Missing)
+	}
+	if want := "git log -n 10 --"; strings.Join(got.Argv, " ") != want {
+		t.Errorf("argv = %q, want %q", got.Argv, want)
+	}
+
+	// Naming a path does limit it.
+	got = assemble(t, e, "git_log", map[string]typesafe.Answer{
+		"git_target_path":  choice("main.go", 0.9),
+		"git_target_path?": noul(0.95),
+	})
+	if want := "git log -n 10 -- main.go"; strings.Join(got.Argv, " ") != want {
+		t.Errorf("argv = %q, want %q", got.Argv, want)
+	}
+
+	// And the same answer on a command that cannot act without a path is not
+	// resolvable at all: the option is simply not in its closed set.
+	cmd, spec := specFor(t, e, "show_file")
+	answers := answersFor(spec, cmd.ID, e)
+	answers["target_path"] = choice("no_path_filter", 0.9)
+	if _, err := catalog.Assemble(cmd, spec, answers, e, nil); err == nil {
+		t.Error("show_file must not accept a target that means 'no path'")
+	}
+}
+
+// TestSharedQuestionIdsAskTheSameQuestion guards the other half of that bug: a
+// question id may only be shared by slots that are identical in kind, gating
+// and option set. Otherwise the first command to declare it silently decides
+// what every other command is asked.
+func TestSharedQuestionIdsAskTheSameQuestion(t *testing.T) {
+	e := testEnv()
+	type shape struct {
+		isFlag  bool
+		stated  bool
+		options string
+	}
+	type shapeAndOwner struct {
+		shape shape
+		cmd   string
+	}
+	seen := map[string]shapeAndOwner{}
+
+	for _, cmd := range catalog.All() {
+		spec, ok := cmd.Build(e)
+		if !ok {
+			continue
+		}
+		for _, slot := range spec.Slots {
+			qid := slot.QuestionID(cmd.ID)
+			keys := make([]string, 0, len(optionsOf(slot, e)))
+			for _, opt := range optionsOf(slot, e) {
+				keys = append(keys, opt.Key)
+			}
+			sort.Strings(keys)
+			now := shape{isFlag: slot.IsFlag(), stated: slot.Stated, options: strings.Join(keys, ",")}
+
+			before, ok := seen[qid]
+			if !ok {
+				seen[qid] = shapeAndOwner{shape: now, cmd: cmd.ID}
+				continue
+			}
+			if before.shape != now {
+				t.Errorf("question %q is declared differently:\n  %s: flag=%v stated=%v options=[%s]\n  %s: flag=%v stated=%v options=[%s]",
+					qid, before.cmd, before.shape.isFlag, before.shape.stated, before.shape.options,
+					cmd.ID, now.isFlag, now.stated, now.options)
 			}
 		}
 	}

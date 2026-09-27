@@ -71,7 +71,7 @@ type Plan struct {
 func Build(e *env.Env, opts Options) (*Plan, error) {
 	commands := catalog.Available(catalog.All(), e)
 	if len(commands) == 0 {
-		return nil, fmt.Errorf("nenhum comando do catálogo está disponível neste ambiente")
+		return nil, fmt.Errorf("no catalog command is available in this environment")
 	}
 	specs := catalog.Specs(commands, e)
 
@@ -247,7 +247,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 
 	intent, ok := res.Answers["intent"]
 	if !ok {
-		return nil, fmt.Errorf("a resposta não trouxe a pergunta %q", "intent")
+		return nil, fmt.Errorf("the response did not include the question %q", "intent")
 	}
 
 	d := &Decision{
@@ -272,7 +272,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	if injection := d.Guardrails["guardrail.injection"].Noul; injection >= opts.InjectionThreshold {
 		d.Verdict = VerdictBlocked
 		d.Reason = fmt.Sprintf(
-			"o pedido parece tentar sair do conjunto fixo de comandos (p=%.2f, limite %.2f)",
+			"the request looks like an attempt to leave the fixed set of commands (p=%.2f, threshold %.2f)",
 			injection, opts.InjectionThreshold)
 		return d, nil
 	}
@@ -282,7 +282,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	if destructive := d.Guardrails["guardrail.destructive_request"].Noul; destructive >= opts.DestructiveThreshold {
 		d.Verdict = VerdictUnsupported
 		d.Reason = fmt.Sprintf(
-			"o pedido envolve alterar dados ou o sistema (p=%.2f) e este CLI só executa comandos de leitura",
+			"the request involves changing data or the system (p=%.2f), and this CLI only runs read-only commands",
 			destructive)
 		return d, nil
 	}
@@ -298,21 +298,21 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	//    A gate below this line does not end the work: the command is still
 	//    resolved so the CLI can show the user its best reading of the phrase.
 	//    Seeing "eu ia rodar git diff -- ." is what makes an ask actionable
-	//    instead of a dead end. That suggestion is display-only — every caller
+	//    instead of a dead end. That suggestion is display-only, every caller
 	//    executes on VerdictAct and nothing else.
 	noneProbability := intent.Probability(catalog.NoneKey)
 	switch {
 	case intent.Choice == catalog.NoneKey || noneProbability >= noneActionThreshold:
 		d.Verdict = VerdictUnsupported
-		d.Reason = fmt.Sprintf("nenhum comando do catálogo corresponde ao pedido (p=%.2f para \"nenhum\")", noneProbability)
+		d.Reason = fmt.Sprintf("no catalog command matches the request (p=%.2f for \"none of these\")", noneProbability)
 	case intent.Confidence < opts.MinConfidence:
 		d.Verdict = VerdictAsk
-		d.Reason = fmt.Sprintf("não tenho certeza de qual comando usar (confiança %.2f, mínimo %.2f)",
+		d.Reason = fmt.Sprintf("not sure which command to use (confidence %.2f, minimum %.2f)",
 			intent.Confidence, opts.MinConfidence)
 	default:
 		if clarity := d.Guardrails["guardrail.intent_clear"].Noul; clarity < opts.ClarityThreshold {
 			d.Verdict = VerdictAsk
-			d.Reason = fmt.Sprintf("o pedido é ambíguo demais para executar sem confirmação (clareza p=%.2f)", clarity)
+			d.Reason = fmt.Sprintf("the request is too ambiguous to run without confirmation (clarity p=%.2f)", clarity)
 		} else {
 			d.Verdict = VerdictAct
 		}
@@ -321,14 +321,14 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	cmd, found := p.command(intent.Choice)
 	if !found {
 		if d.Verdict == VerdictAct {
-			return nil, fmt.Errorf("o modelo escolheu %q, que não está no catálogo", intent.Choice)
+			return nil, fmt.Errorf("the model chose %q, which is not in the catalog", intent.Choice)
 		}
 		// The escape hatch won, so there is no command to offer.
 		return d, nil
 	}
 	if !cmd.ReadOnly && !opts.AllowWrite {
 		d.Verdict = VerdictBlocked
-		d.Reason = "esse comando não é de leitura; use --allow-write para permitir"
+		d.Reason = "this command is not read-only; use --allow-write to permit it"
 		return d, nil
 	}
 
@@ -358,12 +358,12 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 		// A half-resolved command is not a command: dropping the argv makes it
 		// impossible for any later code path to run it by accident.
 		d.Argv = nil
-		d.Reason = "não consegui determinar: " + strings.Join(assembled.Missing, ", ") +
-			" (diga o valor explicitamente, por exemplo com --path)"
+		d.Reason = "could not determine: " + strings.Join(assembled.Missing, ", ") +
+			" (give the value explicitly, for example with --path)"
 		return d, nil
 	}
 	if len(assembled.Argv) == 0 {
-		return nil, fmt.Errorf("o comando resolvido ficou vazio")
+		return nil, fmt.Errorf("the resolved command is empty")
 	}
 
 	d.Argv = assembled.Argv
@@ -380,8 +380,8 @@ func (p *Plan) command(id string) (*catalog.Command, bool) {
 	return nil, false
 }
 
-// topAlternatives returns the runner-up options — everything except the option
-// that won, and except the escape hatch — so a low-confidence answer can be
+// topAlternatives returns the runner-up options, everything except the option
+// that won, and except the escape hatch, so a low-confidence answer can be
 // shown as a choice rather than a guess.
 func topAlternatives(answer typesafe.Answer, labels map[string]string, n int) []typesafe.RankedOption {
 	ranking := answer.Ranking()

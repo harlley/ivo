@@ -43,7 +43,7 @@ type APIError struct {
 func (e *APIError) Error() string {
 	body := strings.TrimSpace(e.Body)
 	if len(body) > 500 {
-		body = body[:500] + "…"
+		body = body[:500] + "..."
 	}
 	msg := fmt.Sprintf("typesafe: HTTP %d", e.Status)
 	if body != "" {
@@ -52,7 +52,7 @@ func (e *APIError) Error() string {
 	// 422s carry the offending field; make it obvious it is our bug, not the
 	// user's.
 	if e.Status == http.StatusUnprocessableEntity {
-		msg += " (request failed validation — this is a bug in the question shapes jev-cli sent)"
+		msg += " (request failed validation, this is a bug in the question shapes jev-cli sent)"
 	}
 	return msg
 }

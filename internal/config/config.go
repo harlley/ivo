@@ -93,7 +93,7 @@ func Load() (Config, string, error) {
 			}
 			if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
 				warnings = append(warnings,
-					fmt.Sprintf("%s pode ser lido por outros usuários; use chmod 600", path))
+					fmt.Sprintf("%s is readable by other users; run chmod 600", path))
 			}
 		case !errors.Is(err, os.ErrNotExist):
 			return cfg, path, err

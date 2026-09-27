@@ -47,7 +47,7 @@ type Outcome struct {
 // Validate refuses anything that should never have been assembled.
 func Validate(argv []string, allow []string) error {
 	if len(argv) == 0 {
-		return errors.New("run: comando vazio")
+		return errors.New("run: empty command")
 	}
 	prog := argv[0]
 	allowed := false
@@ -58,11 +58,11 @@ func Validate(argv []string, allow []string) error {
 		}
 	}
 	if !allowed {
-		return fmt.Errorf("run: %q não está na lista de binários permitidos (%s)", prog, strings.Join(allow, ", "))
+		return fmt.Errorf("run: %q is not in the allowed binary list (%s)", prog, strings.Join(allow, ", "))
 	}
 	for _, tok := range argv {
 		if strings.ContainsRune(tok, 0) {
-			return errors.New("run: token contém byte NUL")
+			return errors.New("run: token contains a NUL byte")
 		}
 	}
 	return nil

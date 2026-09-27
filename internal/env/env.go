@@ -235,7 +235,7 @@ var (
 
 // extractCandidates over-finds spans in the request. Over-finding is the point:
 // the model's job is to pick the right one, and a span it was never offered is
-// a span it cannot pick. Nothing here is trusted yet — every path is confirmed
+// a span it cannot pick. Nothing here is trusted yet, every path is confirmed
 // with stat before it becomes an option.
 func extractCandidates(request, cwd, home string) Candidates {
 	var paths, patterns, terms []string
@@ -288,8 +288,8 @@ func extractCandidates(request, cwd, home string) Candidates {
 		addPattern(g)
 	}
 
-	// 4b. Words that name a kind of file: "arquivos go" -> "*.go". The
-	//     extension may not exist in this directory yet, and that is fine —
+	// 4b. Words that name a kind of file: "go files" -> "*.go". The
+	//     extension may not exist in this directory yet, and that is fine.
 	//     the user asked for it, and the model can reject the option.
 	for _, tok := range strings.Fields(request) {
 		word := strings.ToLower(strings.Trim(tok, "\"'`.,;:!?()[]{}<>"))
@@ -300,9 +300,9 @@ func extractCandidates(request, cwd, home string) Candidates {
 
 	// 5. Fallback: content words. Over-finding is deliberate. The model's job
 	//    is to pick the right one, and a word it was never offered is a word it
-	//    cannot pick — but a short option list that omits the answer entirely
-	//    makes the command unusable. Without this pass, "onde aparece panic
-	//    nesse diretório" would have nothing to offer as a search term.
+	//    cannot pick, but a short option list that omits the answer entirely
+	//    makes the command unusable. Without this pass, "where does panic
+	//    appear in this project" would have nothing to offer as a search term.
 	if len(terms) < MaxTermCandidates {
 		for _, tok := range strings.Fields(request) {
 			word := strings.Trim(tok, "\"'`.,;:!?()[]{}<>*")
@@ -332,6 +332,11 @@ var extensionWords = map[string]string{
 // stopwords keeps the fallback pass from filling the option list with the
 // words every request contains. It is deliberately short: a word wrongly kept
 // costs one option, while a word wrongly dropped can cost the whole command.
+//
+// It holds English and Portuguese words because the phrase the user types is
+// not assumed to be English. Along with extensionWords below, this is the only
+// non-English data in the codebase, and it exists so that a Portuguese phrase
+// reaches the model with the same quality as an English one.
 var stopwords = map[string]bool{
 	// Portuguese function words and the verbs requests usually open with.
 	"as": true, "os": true, "de": true, "do": true, "da": true, "dos": true, "das": true,

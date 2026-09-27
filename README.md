@@ -1,226 +1,235 @@
 # jev-cli
 
-Transforma uma frase em linguagem natural em um comando shell — **sem que nenhum
-modelo de linguagem escreva o comando**.
+Turn a phrase in natural language into a shell command, without letting a
+language model write the command.
 
 ```console
-$ jev "liste todos os arquivos desse diretório"
+$ jev "list all files in this directory"
 $ ls .
-  comando               list_directory · confiança 0.93
-  severidade            0.05
-  target_path           . (confiança 0.97)
-  ls_hidden             omitido (p=0.05)
-  ls_long               omitido (p=0.05)
-  ls_sort_time          omitido (p=0.05)
-  ls_sort_size          omitido (p=0.05)
-  ls_recursive          omitido (p=0.05)
-dry-run: nada foi executado. Use -x para executar.
+  command               list_directory, confidence 1.00
+  severity              0.08
+  target_path           . (confidence 1.00)
+  ls_hidden             omitted: not mentioned (p=0.17)
+  ls_long               omitted: not mentioned (p=0.05)
+  ls_sort_time          omitted: not mentioned (p=0.04)
+  ls_sort_size          omitted: not mentioned (p=0.03)
+  ls_recursive          omitted: not mentioned (p=0.15)
+dry-run: nothing ran. Pass -x to run it.
 
-$ jev -x "liste todos os arquivos desse diretório"
+$ jev -x "list all files in this directory"
 cmd
 go.mod
 internal
 ```
 
-O jev é um modelo **System One** da [TypeSafe AI](https://docs.typesafe.ai): ele
-não gera texto. Ele responde perguntas tipadas — `Choice`, `Score`, `Noul` —
-sobre um **catálogo fechado** de comandos, e o `jev-cli` monta o `argv` a partir
-das respostas.
+jev is a System One model from [TypeSafe AI](https://docs.typesafe.ai). It does
+not generate text. It answers typed questions (Choice, Score, Noul) about a
+closed catalog of commands, and this program assembles the argv from the
+answers.
 
-## Por que assim
+## Why it works this way
 
-Um CLI que pede a um LLM "me devolve o comando shell" tem dois problemas: o
-comando pode ser qualquer coisa, e o texto gerado precisa ser interpretado. Aqui
-as duas coisas somem por construção:
+A CLI that asks an LLM to "return the shell command" has two problems: the
+command can be anything, and the generated text has to be parsed back into
+something runnable. Both disappear here by construction.
 
-- **Nada é gerado.** Toda string que chega à linha de comando ou foi escrita por
-  este repositório (as flags, os programas) ou foi confirmada existir por código
-  (caminhos, padrões, termos). Não existe caminho do modelo para um comando
-  arbitrário: a resposta dele é sempre uma chave de um conjunto que nós
-  definimos.
-- **Nada passa por um shell.** O comando é um `[]string` executado com
-  `exec.CommandContext`. Não há `sh -c`, então aspas, `;`, `|`, `$()` e crases
-  não têm como virar um segundo comando.
-- **A decisão de executar é do código.** Confiança e probabilidades calibradas
-  decidem entre agir, perguntar e recusar — e o padrão é *não executar*.
+- **Nothing is generated.** Every string that reaches the command line was
+  either authored in this repository (the programs, the flags) or confirmed to
+  exist by code (paths, patterns, search terms). There is no path from the
+  model's answer to an arbitrary command: an answer is always a key from a set
+  we defined.
+- **Nothing goes through a shell.** The command is a `[]string` run with
+  `exec.CommandContext`. There is no `sh -c`, so quotes, `;`, `|`, `$()` and
+  backticks cannot become a second command.
+- **Code decides whether to run.** Calibrated confidence and probabilities
+  choose between acting, asking and refusing. The default is not to run.
+- **The vocabulary is closed.** A command that is not in the catalog is never
+  invented. The honest answer is "I cannot do that", with the closest
+  candidates and their probabilities.
 
-## Instalação
+## Install
 
 ```console
 $ go install github.com/harlleyoliveira/jev-cli/cmd/jev@latest
 ```
 
-Sem dependências externas: só a biblioteca padrão do Go.
+No external dependencies, standard library only. Make sure `$HOME/go/bin` is on
+your PATH.
 
-A API key vem de `TYPESAFE_API_KEY`, do arquivo de config, ou de
-`--api-key-file`. Nunca de uma flag comum — argumentos aparecem no `ps`.
+The API key comes from `TYPESAFE_API_KEY`, from the config file, or from
+`--api-key-file`. It is never a normal flag, because arguments are visible in
+the process list.
 
 ```console
 $ export TYPESAFE_API_KEY=...
-$ jev "onde eu estou"
+$ jev "where am I"
 ```
 
-Ou no arquivo (veja [Configuração](#configuração)):
+Reading it from the macOS Keychain keeps it out of your dotfiles and your shell
+history:
 
-```json
-{ "api_key": "ts_..." }
+```sh
+security add-generic-password -a "$USER" -s TYPESAFE_API_KEY -w   # prompts for the secret
+export TYPESAFE_API_KEY="$(security find-generic-password -a "$USER" -s TYPESAFE_API_KEY -w)"
 ```
 
-## Uso
+## Usage
 
 ```
-jev [opções] "frase em linguagem natural"
+jev [options] "phrase in natural language"
 ```
 
-| Opção | Efeito |
+| Option | Effect |
 | --- | --- |
-| *(padrão)* | dry-run: mostra o comando resolvido e as decisões, e para |
-| `-x`, `--execute` | executa o comando resolvido |
-| `--allow-write` | permite comandos que não sejam de leitura |
-| `-j`, `--json` | resultado em JSON; o comando é capturado em vez de herdado |
-| `--path VALOR` | usa este caminho, sem perguntar ao modelo |
-| `--pattern VALOR` | usa este padrão de nome de arquivo |
-| `--term VALOR` | usa este texto de busca |
-| `-v`, `--explain` | mostra o pedido, a resposta bruta, notas e uso de tokens |
-| `--commands` | lista o catálogo fechado e o que está disponível aqui |
-| `-m`, `--model` | modelo (padrão `jev-latest`) |
-| `--base-url` | host da API |
-| `--max-entries` | máximo de entradas do diretório no state |
-| `--min-confidence` | confiança mínima para agir (padrão `0.5`) |
-| `--timeout` | timeout da chamada, em segundos |
-| `--no-color` | sem cores |
+| (default) | dry run: show the resolved command and the decisions, then stop |
+| `-x`, `--execute` | run the resolved command |
+| `--allow-write` | allow commands that are not read-only |
+| `-j`, `--json` | JSON result; the command is captured instead of inherited |
+| `--path VALUE` | use this path, without asking the model |
+| `--pattern VALUE` | use this file name pattern |
+| `--term VALUE` | use this search text |
+| `-v`, `--explain` | show the request, the raw response, notes and token usage |
+| `--commands` | list the closed catalog and what is available here |
+| `-m`, `--model` | model (default `jev-latest`) |
+| `--base-url` | API host |
+| `--max-entries` | maximum directory entries in the state |
+| `--min-confidence` | minimum confidence to act (default `0.5`) |
+| `--timeout` | API call timeout, in seconds |
+| `--no-color` | no colours |
 
-Com `-x`, o código de saída do comando executado é propagado. Sem `-x`, os
-códigos são: `0` sucesso, `1` erro, `2` não resolvido (ambíguo ou fora do
-catálogo), `3` bloqueado por guardrail, `4` sem API key.
+With `-x`, the exit code of the executed command is propagated. Without `-x`:
+`0` success, `1` error, `2` unresolved (ambiguous or outside the catalog),
+`3` blocked by a guardrail, `4` no API key.
 
-## Como funciona
+## How it works
 
 ```
-frase
-  │
-  ├─ CÓDIGO  sonda o ambiente (env.Probe)
-  │            cwd, listagem do diretório (contada e filtrada aqui),
-  │            repo git, binários no PATH, e os candidatos extraídos
-  │            da frase: caminhos que existem, globs, termos
-  │
-  ├─ 1 REQUEST  POST /v1/systemone
-  │            state  = frase + ambiente filtrado
-  │            questions =
-  │               intent                    Choice sobre o catálogo
-  │               target_path               Choice sobre caminhos reais
-  │               name_pattern / search_terms / flags   (especulativas)
-  │               <slot>?                   Noul "o usuário disse algo sobre isso?"
-  │               guardrail.injection       Noul
-  │               guardrail.destructive_request  Noul
-  │               guardrail.intent_clear    Noul
-  │               guardrail.severity        Score
-  │
-  ├─ CÓDIGO  lê só as respostas do comando vencedor (catalog.Assemble)
-  │            aplica os gates, monta o argv
-  │
-  └─ CÓDIGO  dry-run por padrão; executa com -x
+phrase
+  |
+  +- CODE   probe the environment (env.Probe)
+  |           cwd, directory listing (counted and filtered here),
+  |           git repository, binaries on PATH, and the candidates
+  |           lifted out of the phrase: paths that exist, globs, terms
+  |
+  +- ONE REQUEST   POST /v1/systemone
+  |           state     = phrase + filtered environment
+  |           questions =
+  |              intent                        Choice over the catalog
+  |              target_path                   Choice over real paths
+  |              name_pattern / search_terms / flags   (speculative)
+  |              <slot>?                       Noul "did the user mention this?"
+  |              guardrail.injection           Noul
+  |              guardrail.destructive_request Noul
+  |              guardrail.intent_clear        Noul
+  |              guardrail.severity            Score
+  |
+  +- CODE   read only the winning command's answers (catalog.Assemble)
+  |           apply the gates, build the argv
+  |
+  +- CODE   dry run by default; run with -x
 ```
 
-Todas as perguntas vão em **uma única chamada**: o modelo as avalia em paralelo,
-então uma pergunta especulativa sobre um comando que perdeu custa tokens, não
-latência. É o padrão de *speculative fan-out* da documentação da TypeSafe.
+Every question goes in a single request. The model evaluates them in parallel,
+so a speculative question about a command that lost costs tokens, not latency.
+This is the speculative fan-out pattern from the TypeSafe documentation.
 
-### Quatro padrões da doc que este CLI usa
+### Five patterns from the docs
 
-1. **Function calling.** Cada argumento de conjunto fechado vira uma `Choice`
-   cujas chaves são exatamente os valores aceitos. Nada precisa mapear um rótulo
-   de volta para um argumento: a resposta já *é* o token.
-2. **`stated` (`<slot>?`).** Antes de usar um argumento opcional — uma flag ou
-   um valor —, um `Noul` pergunta se o usuário **disse algo** sobre ele. Se não
-   disse, o default declarado vale. É isso que impede uma pergunta respondida no
-   silêncio de virar uma decisão: com o modelo real, "liste todos os arquivos
-   desse diretório" responde a flag de arquivos ocultos em **p=0.52** — logo
-   acima da linha de 0.5 — e o comando saía `ls -a .`. A mesma frase tem o gate
-   em p=0.18, então a flag não entra. Quando o pedido realmente fala de arquivos
-   ocultos, o gate sobe para 0.93 e o `-a` aparece.
-3. **Pre-parsed value extraction.** Caminhos, padrões e termos de busca são
-   strings abertas, e o jev não as produz. O código faz *over-find* com regex e
-   `stat`, e o modelo apenas **seleciona** entre os candidatos. Tudo que volta é
-   verbatim: não dá para inventar ou trocar um dígito.
-4. **Confidence-gated routing + guardrails.** Os gates usam os números da doc
-   (`0.5` para intenção ambígua, `0.35` para revisar, `0.70` para agir sobre um
-   perigo, `2.0` de severidade) e são configuráveis. As perguntas de guardrail
-   rodam na mesma chamada, então não custam latência.
+1. **Function calling.** Each closed-set argument becomes a Choice whose keys
+   are exactly the accepted values. Nothing has to map a label back to an
+   argument: the answer is the token.
+2. **`stated` (`<slot>?`).** Before using an optional argument, flag or value, a
+   Noul asks whether the user *said anything* about it. If not, the declared
+   default stands. This is what keeps a question answered in silence from
+   becoming a decision: against the real model, "list all files in this
+   directory" answers the hidden-files flag at **p=0.52**, just over the 0.5
+   line, and the command used to come out as `ls -a .`. The same phrase puts the
+   gate at p=0.18, so the flag stays off. When the request does mention hidden
+   files, the gate rises to 0.93 and `-a` appears.
+3. **Pre-parsed value extraction.** Paths, patterns and search terms are open
+   strings, and the model cannot produce them. Code over-finds with regex and
+   `stat`, and the model only *selects* among the candidates. Everything comes
+   back verbatim.
+4. **Confidence-gated routing and guardrails.** The gates use the numbers from
+   the documentation (0.5 for an ambiguous intent, 0.35 to review, 0.70 to act
+   on a hazard, 2.0 for severity) and are configurable. The guardrail questions
+   run in the same request, so they cost no extra latency.
+5. **Speculative fan-out.** All slot questions for every available command are
+   asked up front, and code reads only the ones belonging to the winner.
 
-### Contagem e aritmética ficam no código
+### Counting and arithmetic stay in code
 
-O jev não conta de forma confiável e níveis de `Score` têm calibração numérica
-fraca, então `entry_count`, profundidade de busca e ordenação são computados aqui
-— nunca perguntados ao modelo.
+The model does not count reliably and Score levels calibrate poorly to
+magnitudes, so `entry_count`, search depth and ordering are computed here and
+never asked of the model.
 
-## O catálogo
+## The catalog
 
-Tudo que este CLI pode executar, e nada mais:
+Everything this CLI can run, and nothing else:
 
-| Comando | O que faz |
+| Command | What it does |
 | --- | --- |
-| `list_directory` | lista o conteúdo de um diretório |
-| `find_files` | procura arquivos por nome, com profundidade limitada |
-| `search_text` | procura texto dentro de arquivos (`rg`, ou `grep`), com filtro de nome opcional |
-| `show_file` | imprime um arquivo, inteiro ou uma ponta |
-| `count_lines` | conta linhas |
-| `disk_usage` | tamanho de um caminho |
-| `file_info` | que tipo de arquivo é |
-| `report_working_directory` | imprime o diretório atual |
-| `git_status`, `git_log`, `git_diff` | estado, histórico e diff do repositório |
+| `list_directory` | list what is inside a directory |
+| `find_files` | find files by name, with a bounded depth |
+| `search_text` | search inside file contents (`rg`, or `grep`), with an optional file name filter |
+| `show_file` | print a file, all of it or one end |
+| `count_lines` | count lines |
+| `disk_usage` | size of a path |
+| `file_info` | what kind of file something is |
+| `report_working_directory` | print the current directory |
+| `git_status`, `git_log`, `git_diff` | repository state, history and diff |
 
-Todos são **de leitura**. `--commands` mostra o catálogo e marca o que está
-indisponível no ambiente atual (por exemplo, os comandos `git_*` fora de um
-repositório).
+All of them are **read-only**. `--commands` lists the catalog and marks what is
+unavailable in the current environment (for example the `git_` commands outside
+a repository).
 
-Adicionar um comando é adicionar uma entrada em
-[`internal/catalog/entries.go`](internal/catalog/entries.go): um template de
-`argv` com placeholders, os slots que decidem cada placeholder, e as descrições
-contrastivas (*o que é* / *para que não é*) que mantêm comandos vizinhos
-distinguíveis.
+Adding a command means adding an entry in
+[`internal/catalog/entries.go`](internal/catalog/entries.go): an argv template
+with placeholders, the slots that decide each placeholder, and the contrastive
+descriptions (what it is, what it is not for) that keep neighbouring commands
+apart.
 
-## Calibração com o modelo real
+## Calibration against the real model
 
-Os thresholds acima são pontos de partida. Estes são os números que o `jev` de
-verdade devolveu para este projeto, e o que eles mudaram:
+The thresholds above are starting points. These are the numbers the real jev
+returned for this project, and what they changed:
 
-| Frase | Antes | Depois |
+| Phrase | Before | After |
 | --- | --- | --- |
-| `liste todos os arquivos desse diretório` | `ls -a .` (flag em 0.52, falso positivo) | `ls .` (gate em 0.18) |
-| `liste tudo, incluindo os arquivos ocultos` | `ls -a .` | `ls -a .` (p=0.98, correto) |
-| `procure por TODO nos arquivos go` | `rg -e TODO .` (ignorava "arquivos go") | `rg -g '*.go' -e TODO .` |
-| `o que mudou` | `ask` sem saída útil | `ask` + sugestão `git status` + candidatos |
+| `list all files in this directory` | `ls -a .` (flag at 0.52, a false positive) | `ls .` (gate at 0.18) |
+| `list everything including hidden files` | `ls -a .` | `ls -a .` (p=0.98, correct) |
+| `search for TODO in the go files` | `rg -e TODO .` (the file filter was ignored) | `rg -g '*.go' -e TODO .` |
+| `what changed` | `ask` with nothing useful to show | `ask` plus a `git status` suggestion plus candidates |
 
-Os gates de confiança continuam sendo o lugar mais provável de precisar de
-ajuste. `o que mudou` fica em `ask` porque o modelo divide entre `git_status` e
-`git_diff` (0.40) — o que é uma ambiguidade real, não um erro. Para quem preferir
-que ele aja nesse caso, `min_confidence` no config resolve; o comando continua
-sendo de leitura.
+The confidence gates remain the most likely place to need tuning. `what changed`
+stops at `ask` because the model splits between `git_status` and `git_diff`
+(0.40), which is real ambiguity rather than an error. If you would rather it
+acted there, lower `min_confidence` in the config; the command is still
+read-only.
 
-## Limites conhecidos
+## Known limits
 
-- **Não encadeia comandos.** Sem pipe: um `argv`, um programa. Frases que pedem
-  duas coisas ("liste e depois ordene por tamanho") caem em `ask` ou
-  `unsupported`. Um pipeline interno é o próximo passo natural.
-- **Não escreve nada.** Pedidos de alteração são recusados com essa explicação,
-  em vez de atendidos com algo parecido. Escrever exigiria uma taxonomia de risco
-  de verdade — as flags já existem (`ReadOnly`, `--allow-write`), mas nenhuma
-  entrada é de escrita ainda.
-- **Vocabulário fechado é fechado.** O que não está no catálogo não é feito. A
-  saída honesta é `unsupported` com os candidatos mais prováveis e suas
-  probabilidades.
-- **255 opções por `Choice`.** A listagem do diretório é limitada por
-  `max_entries`; um comando cujos candidatos não couberem (ou não existirem)
-  simplesmente não fica disponível naquela invocação, em vez de virar um 422.
-- **`state` não é hostil para o modelo.** Texto livre — inclusive nomes de
-  arquivo — pode influenciar respostas. Por isso: listagem filtrada e limitada,
-  guardrail de injeção, e um allowlist de programas como última linha de defesa.
+- **No command chaining.** No pipes: one argv, one program. A phrase that asks
+  for two things lands on `ask` or `unsupported`. An internal pipeline is the
+  natural next step.
+- **Nothing is written.** Requests to change something are refused with that
+  explanation, rather than answered with something adjacent. Writing would need
+  a real risk taxonomy; the flags exist (`ReadOnly`, `--allow-write`), but no
+  entry uses them yet.
+- **A closed vocabulary is closed.** What is not in the catalog does not happen.
+  The honest output is `unsupported`, with the most likely candidates and their
+  probabilities.
+- **255 options per Choice.** The directory listing is bounded by
+  `max_entries`. A command whose candidates do not exist, or would not fit,
+  simply is not offered in that invocation, instead of becoming a 422.
+- **The state is not hostile to the model.** Free text, including file names,
+  can influence answers. Hence the filtered and bounded listing, the injection
+  guardrail, and a program allowlist as the last line of defence.
 
-## Configuração
+## Configuration
 
-`~/.config/jev/config.json` (ou `$XDG_CONFIG_HOME/jev/config.json`, ou
-`$JEV_CONFIG`). Chaves opcionais:
+`~/.config/jev/config.json` (or `$XDG_CONFIG_HOME/jev/config.json`, or
+`$JEV_CONFIG`). All keys are optional:
 
 ```json
 {
@@ -239,23 +248,29 @@ sendo de leitura.
 }
 ```
 
-Variáveis de ambiente: `TYPESAFE_API_KEY`, `JEV_MODEL`, `JEV_BASE_URL`,
-`JEV_CONFIG`, `NO_COLOR`. Se o arquivo contiver uma API key e for legível por
-outros usuários, o CLI avisa.
+Environment variables: `TYPESAFE_API_KEY`, `JEV_MODEL`, `JEV_BASE_URL`,
+`JEV_CONFIG`, `NO_COLOR`. If the file holds an API key and other users can read
+it, the CLI says so.
 
-## Desenvolvimento
+## Development
 
 ```console
 $ go test ./...
 $ go vet ./...
+$ ./scripts/test-sheet.sh          # a human-readable mapping check, dry run only
 ```
 
-A suíte cobre o cliente HTTP (incluindo retry em `429`/`529` e a recusa em
-retentar `401`/`422`), a montagem do `argv` (grupos exclusivos, dependências
-entre flags, defaults, valores forçados), a extração de candidatos, os vereditos
-de guardrail, e um teste **end-to-end** que roda o binário contra um servidor
-TypeSafe falso — inclusive executando de verdade o `ls` resolvido.
+The suite covers the HTTP client (including retries on 429 and 529 and the
+refusal to retry 401 and 422), argv assembly (exclusive flag groups, flag
+dependencies, defaults, forced literals), candidate extraction, the guardrail
+verdicts, and an end-to-end test that runs the binary against a fake TypeSafe
+server and actually executes the resolved `ls`.
 
-## Licença
+It also asserts the invariants the design rests on: the request body carries
+exactly `state`, `model` and `questions` with only noul, choice and score
+questions; every token in the argv was authored in the catalog, checked across
+more than a thousand answer combinations; and no command can reach a shell.
+
+## License
 
 MIT.

@@ -15,7 +15,7 @@ func TestValidateRefusesAnythingOutsideTheAllowlist(t *testing.T) {
 		t.Errorf("ls should be allowed: %v", err)
 	}
 	err := Validate([]string{"rm", "-rf", "/"}, allow)
-	if err == nil || !strings.Contains(err.Error(), "não está na lista") {
+	if err == nil || !strings.Contains(err.Error(), "is not in the allowed binary list") {
 		t.Errorf("rm should be refused, got %v", err)
 	}
 	if err := Validate(nil, allow); err == nil {
@@ -46,7 +46,7 @@ func TestDryRunStartsNothing(t *testing.T) {
 }
 
 func TestExecuteCapturesOutput(t *testing.T) {
-	outcome, err := Do(context.Background(), []string{"echo", "olá"}, Options{
+	outcome, err := Do(context.Background(), []string{"echo", "hello"}, Options{
 		Execute: true,
 		Allow:   []string{"echo"},
 		Capture: true,
@@ -57,7 +57,7 @@ func TestExecuteCapturesOutput(t *testing.T) {
 	if !outcome.Ran || outcome.ExitCode != 0 {
 		t.Fatalf("outcome = %+v", outcome)
 	}
-	if strings.TrimSpace(outcome.Stdout) != "olá" {
+	if strings.TrimSpace(outcome.Stdout) != "hello" {
 		t.Errorf("stdout = %q", outcome.Stdout)
 	}
 }

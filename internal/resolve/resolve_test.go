@@ -20,7 +20,7 @@ func testEnv() *env.Env {
 		bins[b] = true
 	}
 	return &env.Env{
-		Request: "liste todos os arquivos desse diretório",
+		Request: "list all files in this directory",
 		OS:      "darwin",
 		CWD:     "/tmp/projeto",
 		Home:    "/Users/test",
@@ -198,7 +198,7 @@ func TestDecideVerdicts(t *testing.T) {
 			answers: map[string]typesafe.Answer{
 				"intent":                 choice("show_file", 0.94),
 				"guardrail.intent_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-				"target_path":            choice("no_path_filter", 0.9),
+				"target_path":            choice(catalog.NoneKey, 0.9),
 			},
 			verdict: resolve.VerdictAsk,
 		},
@@ -377,7 +377,7 @@ func TestTheRequestUsesOnlyTheThreePrimitives(t *testing.T) {
 		switch key {
 		case "state", "model", "questions":
 		default:
-			t.Errorf("unexpected top-level field %q — the endpoint takes exactly state, model and questions", key)
+			t.Errorf("unexpected top-level field %q, the endpoint takes exactly state, model and questions", key)
 		}
 	}
 
@@ -426,8 +426,8 @@ func TestTheRequestUsesOnlyTheThreePrimitives(t *testing.T) {
 }
 
 // TestSilenceDoesNotAddAFlag is the regression test for the first thing the
-// real model got wrong. Asked "liste todos os arquivos desse diretório", it
-// answered the hidden-files flag at p=0.52 — just over the 0.5 line — and the
+// real model got wrong. Asked "list all files in this directory", it
+// answered the hidden-files flag at p=0.52, just over the 0.5 line, and the
 // command came back as `ls -a .`. The request says nothing about hidden
 // entries, so the gate must drop the flag even though the flag question itself
 // leans yes.
@@ -450,7 +450,7 @@ func TestSilenceDoesNotAddAFlag(t *testing.T) {
 		t.Errorf("argv = %q, want %q: silence must not add a flag", got, "ls .")
 	}
 	for _, note := range decision.Notes {
-		if note.Slot == "ls_hidden" && !strings.Contains(note.Detail, "não mencionado") {
+		if note.Slot == "ls_hidden" && !strings.Contains(note.Detail, "not mentioned") {
 			t.Errorf("the note should say the request was silent, got %q", note.Detail)
 		}
 	}
@@ -467,7 +467,7 @@ func TestSilenceDoesNotAddAFlag(t *testing.T) {
 }
 
 // TestContentSearchCanBeLimitedToMatchingFiles covers the other real gap: the
-// phrase "procure por TODO nos arquivos go" ran `rg -e TODO .`, silently
+// phrase "search for TODO in the go files" ran `rg -e TODO .`, silently
 // searching every file instead of the Go files that were asked for.
 func TestContentSearchCanBeLimitedToMatchingFiles(t *testing.T) {
 	p := plan(t, resolve.Options{})
@@ -485,5 +485,31 @@ func TestContentSearchCanBeLimitedToMatchingFiles(t *testing.T) {
 	}
 	if got := strings.Join(decision.Argv, " "); got != "rg -g *.go -e TODO ." {
 		t.Errorf("argv = %q, want the file filter to be applied", got)
+	}
+}
+
+// TestThePlanAsksEveryQuestionAssemblyNeeds closes the gap that let a shared
+// question id silently drop a whole question: two commands shared QID
+// "target_path" while only one of them was gated, so the gate was never asked
+// and assembly failed at run time. The plan and the assembler must agree.
+func TestThePlanAsksEveryQuestionAssemblyNeeds(t *testing.T) {
+	p := plan(t, resolve.Options{})
+
+	for _, cmd := range p.Commands {
+		spec, ok := p.Specs[cmd.ID]
+		if !ok {
+			t.Fatalf("%s: no spec", cmd.ID)
+		}
+		for _, slot := range spec.Slots {
+			qid := slot.QuestionID(cmd.ID)
+			if _, asked := p.Request.Questions[qid]; !asked {
+				t.Errorf("%s: the plan never asks %q", cmd.ID, qid)
+			}
+			if slot.Stated {
+				if _, asked := p.Request.Questions[qid+"?"]; !asked {
+					t.Errorf("%s: the plan never asks the gate %q", cmd.ID, qid+"?")
+				}
+			}
+		}
 	}
 }

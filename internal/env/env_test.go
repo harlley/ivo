@@ -12,7 +12,7 @@ func writeTree(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, name := range []string{"main.go", "README.md", "notas.txt"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("conteúdo\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("contents\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -28,7 +28,7 @@ func TestProbeFiltersAndOrdersTheListing(t *testing.T) {
 	dir := writeTree(t)
 	t.Chdir(dir)
 
-	e, err := Probe(ProbeOptions{Request: "liste os arquivos", Binaries: []string{"ls"}, MaxEntries: 100})
+	e, err := Probe(ProbeOptions{Request: "list the files", Binaries: []string{"ls"}, MaxEntries: 100})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestProbeTruncatesAndCountsInCode(t *testing.T) {
 	dir := writeTree(t)
 	t.Chdir(dir)
 
-	e, err := Probe(ProbeOptions{Request: "liste", Binaries: nil, MaxEntries: 2})
+	e, err := Probe(ProbeOptions{Request: "list", Binaries: nil, MaxEntries: 2})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestProbeFindsTheRepository(t *testing.T) {
 	}
 	t.Chdir(nested)
 
-	e, err := Probe(ProbeOptions{Request: "o que mudou", Binaries: []string{"git"}})
+	e, err := Probe(ProbeOptions{Request: "what changed", Binaries: []string{"git"}})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestProbeFindsTheRepository(t *testing.T) {
 
 func TestProbeWithoutARepositoryIsNotAnError(t *testing.T) {
 	t.Chdir(t.TempDir())
-	e, err := Probe(ProbeOptions{Request: "liste"})
+	e, err := Probe(ProbeOptions{Request: "list"})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestCandidatesOnlyOfferPathsThatExist(t *testing.T) {
 	t.Chdir(dir)
 
 	e, err := Probe(ProbeOptions{
-		Request: `mostre o "main.go" e compare com ./nao-existe.go`,
+		Request: `show "main.go" and compare it with ./does-not-exist.go`,
 	})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
@@ -120,7 +120,7 @@ func TestCandidatesOnlyOfferPathsThatExist(t *testing.T) {
 		t.Errorf("paths = %v, want main.go", e.Candidates.Paths)
 	}
 	for _, p := range e.Candidates.Paths {
-		if strings.Contains(p, "nao-existe") {
+		if strings.Contains(p, "does-not-exist") {
 			t.Errorf("a path that does not exist was offered: %q", p)
 		}
 	}
@@ -131,7 +131,7 @@ func TestCandidatesOnlyOfferPathsThatExist(t *testing.T) {
 
 func TestCandidatesFindGlobsAndExtensions(t *testing.T) {
 	t.Chdir(writeTree(t))
-	e, err := Probe(ProbeOptions{Request: "encontre os arquivos *.md e também os .go"})
+	e, err := Probe(ProbeOptions{Request: "find the *.md files and the .go ones too"})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestCandidatesFindGlobsAndExtensions(t *testing.T) {
 
 func TestCandidatesFindShoutedWords(t *testing.T) {
 	t.Chdir(writeTree(t))
-	e, err := Probe(ProbeOptions{Request: "procure por TODO e FIXME nos fontes"})
+	e, err := Probe(ProbeOptions{Request: "search for TODO and FIXME in the sources"})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -159,14 +159,14 @@ func TestCandidatesFallBackToContentWords(t *testing.T) {
 	t.Chdir(writeTree(t))
 	// No quotes, no shouted words: without this fallback there would be
 	// nothing to search for and the command would be unusable.
-	e, err := Probe(ProbeOptions{Request: "onde aparece panic nesse projeto"})
+	e, err := Probe(ProbeOptions{Request: "where does panic appear in this project"})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
 	if !contains(e.Candidates.Terms, "panic") {
 		t.Errorf("terms = %v, want the content word panic", e.Candidates.Terms)
 	}
-	for _, noise := range []string{"onde", "nesse"} {
+	for _, noise := range []string{"where", "this"} {
 		if contains(e.Candidates.Terms, noise) {
 			t.Errorf("terms = %v should not contain the function word %q", e.Candidates.Terms, noise)
 		}
@@ -177,7 +177,7 @@ func TestCandidateListsAreCapped(t *testing.T) {
 	t.Chdir(writeTree(t))
 	words := make([]string, 0, 200)
 	for i := 0; i < 200; i++ {
-		words = append(words, "palavra"+string(rune('a'+i%26))+string(rune('a'+i/26)))
+		words = append(words, "word"+string(rune('a'+i%26))+string(rune('a'+i/26)))
 	}
 	e, err := Probe(ProbeOptions{Request: strings.Join(words, " ")})
 	if err != nil {
@@ -209,4 +209,21 @@ func contains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestPortugueseInputIsStillHandled keeps the language-independent promise
+// honest. The catalog, the questions and the output are all English, but the
+// phrase the user types is not assumed to be: Portuguese function words are
+// filtered and the words that carry meaning survive as candidates.
+func TestPortugueseInputIsStillHandled(t *testing.T) {
+	t.Chdir(writeTree(t))
+	e, err := Probe(ProbeOptions{Request: "liste todos os arquivos desse diretório"})
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	for _, noise := range []string{"liste", "todos", "desse", "diretório", "arquivos"} {
+		if contains(e.Candidates.Terms, noise) {
+			t.Errorf("terms = %v should have filtered the function word %q", e.Candidates.Terms, noise)
+		}
+	}
 }

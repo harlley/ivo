@@ -39,7 +39,7 @@ const (
 // Value is one option of a selection question. Key is what the model answers
 // and is deliberately the literal string itself, so nothing has to map a label
 // back to an argument afterwards. Argv is what that option contributes to the
-// command line — possibly nothing, for "no filter" style options.
+// command line, possibly nothing, for "no filter" style options.
 type Value struct {
 	Key  string
 	Desc string
@@ -89,7 +89,7 @@ type Slot struct {
 	EmptyFallback []string
 
 	// Requires names another slot's placeholder. If that slot contributed no
-	// tokens, this one is dropped too — this is how `-name` and its pattern
+	// tokens, this one is dropped too, this is how `-name` and its pattern
 	// stay together instead of leaving a dangling flag.
 	Requires string
 
@@ -192,8 +192,8 @@ func (s Spec) Validate(cmdID string) error {
 		}
 		seen[slot.ID] = i
 	}
-	// Requires may point forwards — a flag often depends on a pattern slot
-	// declared after it — so the only thing to check is that the target exists
+	// Requires may point forwards, a flag often depends on a pattern slot
+	// declared after it, so the only thing to check is that the target exists
 	// somewhere in the spec. Assemble resolves it in two passes.
 	for _, slot := range s.Slots {
 		if slot.Requires == "" {
@@ -287,7 +287,7 @@ func Specs(cmds []Command, e *env.Env) map[string]Spec {
 
 // usable reports whether every required selection slot has something real to
 // choose from. A Choice whose only remaining option is the escape hatch would
-// be a 422 from the API and, worse, a question with no answer — so a command
+// be a 422 from the API and, worse, a question with no answer, so a command
 // that cannot be decided here is simply not offered.
 func (s Spec) usable(e *env.Env) bool {
 	for _, slot := range s.Slots {
@@ -316,7 +316,7 @@ func IntentQuestion(cmds []Command) typesafe.Question {
 		}
 		criteria[c.ID] = desc
 	}
-	criteria[NoneKey] = "The request wants something none of these commands does — including anything that modifies, moves or deletes data, installs software, or reaches the network."
+	criteria[NoneKey] = "The request wants something none of these commands does, including anything that modifies, moves or deletes data, installs software, or reaches the network."
 	return typesafe.Choice(
 		"Which of the available commands should run on this machine to satisfy the request?",
 		criteria,
@@ -375,6 +375,11 @@ type evaluated struct {
 	answered   bool
 	weight     float64
 	suppressed string
+	// resolved records that the slot got a real answer. It is deliberately
+	// not the same as "produced tokens": `no_path_filter` is a legitimate
+	// answer that contributes nothing, while the escape hatch is not an
+	// answer at all.
+	resolved bool
 	// unstated records that the user said nothing about this slot, so the
 	// note can say so instead of pretending the model decided.
 	unstated bool
@@ -401,6 +406,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 		// the closed set anyway.
 		if literal, isForced := forced[slot.ID]; isForced && !slot.IsFlag() {
 			ev.tokens = []string{literal}
+			ev.resolved = true
 			ev.answer = typesafe.Answer{Type: typesafe.KindChoice, Choice: literal, Confidence: 1}
 			ev.answered = true
 			ev.weight = 1
@@ -421,8 +427,8 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 		// The "did the user say anything about this?" gate comes first, for
 		// flags and selections alike. Without it, a flag question answered on
 		// silence lands just above the threshold and adds a flag nobody asked
-		// for (the real model answers 0.52 for "liste todos os arquivos desse
-		// diretório" — enough to add -a). With it, silence means the declared
+		// for (the real model answers 0.52 for "list all files in this
+		// directory", enough to add -a). With it, silence means the declared
 		// default stands and the flag is left off.
 		if slot.Stated {
 			statedQID := qid + "?"
@@ -433,6 +439,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 			if stated.Noul < StatedThreshold {
 				ev.weight = stated.Noul
 				ev.unstated = true
+				ev.resolved = true
 				if !slot.IsFlag() {
 					if val, found := findValue(slot.options(e), slot.Default); found {
 						ev.tokens = val.Argv
@@ -448,6 +455,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 			if !ok {
 				return Assembled{}, fmt.Errorf("catalog: no answer for flag %q", qid)
 			}
+			ev.resolved = true
 			ev.weight = answer.Noul
 			if answer.Noul >= FlagThreshold {
 				ev.tokens = slot.trueArgv(cmd.ID)
@@ -463,6 +471,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 				ev.tokens = nil
 				break
 			}
+			ev.resolved = true
 			ev.tokens = val.Argv
 
 		default:
@@ -478,6 +487,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 				ev.tokens = nil
 				break
 			}
+			ev.resolved = true
 			ev.tokens = val.Argv
 		}
 
@@ -513,7 +523,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 	// whose dependency contributed nothing.
 	for i := range evaluatedSlots {
 		ev := &evaluatedSlots[i]
-		if len(ev.tokens) == 0 && len(ev.slot.EmptyFallback) > 0 && ev.slot.Requires == "" {
+		if ev.resolved && len(ev.tokens) == 0 && len(ev.slot.EmptyFallback) > 0 && ev.slot.Requires == "" {
 			ev.tokens = ev.slot.EmptyFallback
 		}
 		produced[ev.slot.Placeholder()] = len(ev.tokens) > 0
@@ -540,7 +550,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 			Detail:   describe(ev),
 		}
 		notes = append(notes, note)
-		if len(ev.tokens) == 0 && !ev.slot.Stated && !ev.slot.IsFlag() {
+		if !ev.resolved && !ev.slot.IsFlag() {
 			missing = append(missing, ev.slot.ID)
 		}
 	}
@@ -577,29 +587,29 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 func describe(ev evaluated) string {
 	switch {
 	case ev.suppressed != "":
-		return fmt.Sprintf("omitido: conflita com %s", ev.suppressed)
+		return fmt.Sprintf("omitted: conflicts with %s", ev.suppressed)
 	case ev.unstated && ev.slot.IsFlag():
 		if len(ev.tokens) > 0 {
-			return fmt.Sprintf("incluído: padrão (não mencionado, p=%.2f)", ev.weight)
+			return fmt.Sprintf("included: default (not mentioned, p=%.2f)", ev.weight)
 		}
-		return fmt.Sprintf("omitido: não mencionado (p=%.2f)", ev.weight)
+		return fmt.Sprintf("omitted: not mentioned (p=%.2f)", ev.weight)
 	case ev.unstated:
 		if len(ev.tokens) == 0 {
-			return fmt.Sprintf("omitido: não mencionado (p=%.2f)", ev.weight)
+			return fmt.Sprintf("omitted: not mentioned (p=%.2f)", ev.weight)
 		}
-		return fmt.Sprintf("padrão %s: não mencionado (p=%.2f)", strings.Join(ev.tokens, " "), ev.weight)
+		return fmt.Sprintf("default %s: not mentioned (p=%.2f)", strings.Join(ev.tokens, " "), ev.weight)
 	case ev.slot.IsFlag():
 		if len(ev.tokens) > 0 {
-			return fmt.Sprintf("incluído (p=%.2f)", ev.answer.Noul)
+			return fmt.Sprintf("included (p=%.2f)", ev.answer.Noul)
 		}
-		return fmt.Sprintf("omitido (p=%.2f)", ev.answer.Noul)
+		return fmt.Sprintf("omitted (p=%.2f)", ev.answer.Noul)
 	case len(ev.tokens) == 0:
 		if ev.answer.Choice == NoneKey {
-			return "não resolvido: nenhuma opção serve"
+			return "unresolved: none of the options fits"
 		}
-		return "nenhum valor"
+		return "no value"
 	default:
-		return fmt.Sprintf("%s (confiança %.2f)", strings.Join(ev.tokens, " "), ev.answer.Confidence)
+		return fmt.Sprintf("%s (confidence %.2f)", strings.Join(ev.tokens, " "), ev.answer.Confidence)
 	}
 }
 

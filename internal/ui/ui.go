@@ -96,7 +96,7 @@ func IsTerminal(f *os.File) bool {
 }
 
 // ColorSupported reports whether colour should be used for this stream. A
-// buffer — a test, a pipe, a file — never gets ANSI codes.
+// buffer, a test, a pipe, a file, never gets ANSI codes.
 func ColorSupported(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && IsTerminal(f)
