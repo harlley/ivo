@@ -355,7 +355,7 @@ func TestTheWalkAccumulatesOptionsUntilTheCallSatisfies(t *testing.T) {
 		{"satisfied.2": noul(0.93), "options.2": choice(catalog.NoneKey, 0.8)},
 	}}
 
-	evaluation, err := p.Evaluate(context.Background(), asker)
+	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestTheWalkStopsWhenTheCallIsAlreadyEnough(t *testing.T) {
 		{"satisfied.0": noul(0.88), "options.0": choice("-a", 0.9)},
 	}}
 
-	evaluation, err := p.Evaluate(context.Background(), asker)
+	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestTheWalkStopsAtTheEscapeHatchAndAtTheRoundLimit(t *testing.T) {
 		stageOne("list_directory", 0.95),
 		{"satisfied.0": noul(0.10), "options.0": choice(catalog.NoneKey, 0.85)},
 	}}
-	evaluation, err := p.Evaluate(context.Background(), asker)
+	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestTheWalkStopsAtTheEscapeHatchAndAtTheRoundLimit(t *testing.T) {
 			fmt.Sprintf("options.%d", round):   choice("-a", 0.9),
 		})
 	}
-	evaluation, err = p.Evaluate(context.Background(), &scriptedAsker{t: t, scripted: scripted})
+	evaluation, err = p.Evaluate(context.Background(), &scriptedAsker{t: t, scripted: scripted}, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestAnOptionTheProgramDoesNotDocumentIsIgnored(t *testing.T) {
 		stageOne("list_directory", 0.95),
 		{"satisfied.0": noul(0.10), "options.0": choice("--exec=rm -rf /", 0.99)},
 	}}
-	evaluation, err := p.Evaluate(context.Background(), asker)
+	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -663,7 +663,7 @@ func TestAWordThatNamesAProgramBecomesATool(t *testing.T) {
 		{"satisfied.0": noul(0.9)},
 		{"side_effect": noul(0.06)},
 	}}
-	evaluation, err := p.Evaluate(context.Background(), asker)
+	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -694,7 +694,7 @@ func TestAWordThatNamesAProgramBecomesATool(t *testing.T) {
 		{"satisfied.0": noul(0.9)},
 		{"side_effect": noul(0.88)},
 	}}
-	evaluation, err = p2.Evaluate(context.Background(), unsafe)
+	evaluation, err = p2.Evaluate(context.Background(), unsafe, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestAWordIsNotEnoughOnItsOwn(t *testing.T) {
 		stageOne("report_working_directory", 0.9),
 	}}
 
-	evaluation, err := p.Evaluate(context.Background(), asker)
+	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}

@@ -304,3 +304,34 @@ func TestDescribeUsesTheProgramsOwnWords(t *testing.T) {
 		t.Errorf("summary = %q, want a description rather than a usage line", described[0].Summary)
 	}
 }
+
+// TestWordCandidatesKeepsShortNames is the bug that made "rm" invisible: the
+// word filter used the search term rules, which drop anything shorter than three
+// characters, and half of the standard commands are shorter than that.
+func TestWordCandidatesKeepsShortNames(t *testing.T) {
+	got := WordCandidates("apague o diretório build com rm")
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"rm", "build"} {
+		if !contains(got, want) {
+			t.Errorf("WordCandidates = %v, missing %q", got, want)
+		}
+	}
+	for _, word := range got {
+		if len([]rune(word)) < 2 {
+			t.Errorf("single letters should still be dropped, got %q in %v", word, got)
+		}
+	}
+	_ = joined
+
+	// The filter is for program names, so it does not use the stopword list.
+	if got := WordCandidates("where is ps"); !contains(got, "ps") {
+		t.Errorf("WordCandidates = %v, want ps", got)
+	}
+	if got := WordCandidates("go to the directory"); !contains(got, "go") {
+		t.Errorf("WordCandidates = %v, want go", got)
+	}
+	// Repeats are asked once.
+	if got := WordCandidates("ls ls LS"); len(got) != 1 {
+		t.Errorf("WordCandidates = %v, want one entry", got)
+	}
+}

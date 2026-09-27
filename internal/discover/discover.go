@@ -295,6 +295,28 @@ func FirstSentence(desc string) string {
 	return desc
 }
 
+// WordCandidates splits a request into the words worth asking about: is this one
+// the name of a program?
+//
+// It is deliberately not ContentWords. That list drops short words and function
+// words because they are noise in a search term, and a program name is often
+// exactly that: rm, cp, mv, ls, dd, ps and jq are all two characters, and id is
+// a word every sentence has. Sending them costs one question each, and the model
+// answers them in the same request, so the cost of asking is a few tokens.
+func WordCandidates(request string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, token := range strings.Fields(request) {
+		word := strings.Trim(token, "\"'`,;:!?()[]{}<>*")
+		if len([]rune(word)) < 2 || seen[strings.ToLower(word)] {
+			continue
+		}
+		seen[strings.ToLower(word)] = true
+		out = append(out, word)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // the words a request is made of
 // ---------------------------------------------------------------------------
@@ -365,13 +387,33 @@ func cachePath(program string) string {
 	return filepath.Join(dir, "jev", "docs", program+".json")
 }
 
-// summaryOf takes the first line that says something, which is how a program
-// introduces itself in its help or its manual. Short usage lines are skipped:
-// "usage: zed" says less than nothing.
+// summaryOf takes what a program says it is for.
+//
+// A manual page opens with a header ("RM(1) General Commands Manual RM(1)") and
+// then a NAME section, which is the line worth having: "rm, unlink - remove
+// directory entries". Help output usually opens with the description itself.
 func summaryOf(text string) string {
-	for _, line := range strings.Split(text, "\n") {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "NAME" {
+			continue
+		}
+		for _, after := range lines[i+1:] {
+			after = strings.TrimSpace(after)
+			if after == "" {
+				continue
+			}
+			// "rm, unlink - remove directory entries" keeps the description.
+			if idx := strings.Index(after, " - "); idx >= 0 {
+				return strings.TrimSpace(after[idx+3:])
+			}
+			return after
+		}
+	}
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if len(line) < 12 || strings.HasPrefix(strings.ToLower(line), "usage") {
+		lowered := strings.ToLower(line)
+		if len(line) < 12 || strings.HasPrefix(lowered, "usage") || strings.Contains(lowered, "general commands manual") {
 			continue
 		}
 		return line
@@ -380,7 +422,7 @@ func summaryOf(text string) string {
 }
 
 // cacheVersion invalidates entries written by an older reader.
-const cacheVersion = 3
+const cacheVersion = 4
 
 func readCache(program string) (Docs, bool) {
 	path := cachePath(program)

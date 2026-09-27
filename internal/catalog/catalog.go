@@ -575,7 +575,7 @@ func ToolQuestion(tools []Tool) typesafe.Question {
 		}
 		criteria[t.Name] = desc
 	}
-	criteria[NoneKey] = "The request wants something none of these tools does, including anything that modifies, moves or deletes data, installs software, or reaches the network."
+	criteria[NoneKey] = "No tool in this list fits the request, or the request wants something no tool here does."
 	return typesafe.Choice(
 		"Which of the available tools should be called to satisfy the request?",
 		criteria,

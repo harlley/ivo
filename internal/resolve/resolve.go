@@ -80,7 +80,7 @@ func Build(e *env.Env) (*Plan, error) {
 		Env:      e,
 		Tools:    tools,
 		Bindings: catalog.Bindings(tools, e),
-		Words:    discover.ContentWords(e.Request),
+		Words:    discover.WordCandidates(e.Request),
 	}
 	// Assembled once with the shaped tools, and again in Evaluate when the word
 	// filter has had its say. Assembling is pure work on the catalog, so doing
@@ -259,7 +259,7 @@ type Evaluation struct {
 // asks whether the call built so far already answers the request, and if not,
 // which option to add next. Both questions ride in the same request, so a round
 // costs one round trip whatever the answer turns out to be.
-func (p *Plan) Evaluate(ctx context.Context, client Asker) (*Evaluation, error) {
+func (p *Plan) Evaluate(ctx context.Context, client Asker, opts DecideOptions) (*Evaluation, error) {
 	evaluation := &Evaluation{}
 
 	// Stage one: which words of the request name a program? Until that is
@@ -318,8 +318,9 @@ func (p *Plan) Evaluate(ctx context.Context, client Asker) (*Evaluation, error) 
 	}
 
 	// A tool nobody classified has to pass one more question, asked about the
-	// call that was built rather than about the request.
-	if tool, ok := p.tool(chosenTool(first.Response)); ok && !tool.ReadOnly && len(evaluation.Flags) >= 0 {
+	// call that was built rather than about the request. Being told twice
+	// already is a reason not to ask.
+	if tool, ok := p.tool(chosenTool(first.Response)); ok && !tool.ReadOnly && !opts.AllowWrite {
 		if binding, ok := p.Bindings[tool.Name]; ok {
 			asked, err := ask(typesafe.SystemOneRequest{
 				State: p.Request.State,
@@ -338,7 +339,7 @@ func (p *Plan) Evaluate(ctx context.Context, client Asker) (*Evaluation, error) 
 		}
 	}
 
-	decision, err := p.Decide(first.Response, evaluation.Flags, evaluation.CallIsSafe, DecideOptions{})
+	decision, err := p.Decide(first.Response, evaluation.Flags, evaluation.CallIsSafe, opts)
 	if err != nil {
 		return nil, err
 	}

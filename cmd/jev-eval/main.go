@@ -148,7 +148,7 @@ func evaluate(client *typesafe.Client, c eval.Case, timeout time.Duration) eval.
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	evaluation, err := plan.Evaluate(ctx, client)
+	evaluation, err := plan.Evaluate(ctx, client, resolve.DecideOptions{})
 	if err != nil {
 		result.Failure = err.Error()
 		return result

@@ -114,7 +114,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	client := typesafe.NewClient(apiKey, typesafe.WithBaseURL(baseURL()))
-	evaluation, err := plan.Evaluate(ctx, client)
+	evaluation, err := plan.Evaluate(ctx, client, resolve.DecideOptions{AllowWrite: opts.allowWrite})
 	if err != nil {
 		if typesafe.IsAuthError(err) {
 			printer.Error("the API rejected the API key. Check %s.", typesafe.EnvAPIKey)
