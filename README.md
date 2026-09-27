@@ -1,7 +1,7 @@
 # jev-cli
 
-Turn a phrase in natural language into a shell command, without letting a
-language model write the command.
+A tool-calling layer for the shell. Give it a phrase in natural language, get a
+tool call with typed arguments, bound to a command line.
 
 ```console
 $ jev --dry-run "list all files in this directory"
@@ -9,46 +9,42 @@ $ ls .
   command               list_directory, confidence 1.00
   severity              0.08
   target_path           . (confidence 1.00)
-  ls_hidden             omitted: not mentioned (p=0.17)
-  ls_long               omitted: not mentioned (p=0.05)
-  ls_sort_time          omitted: not mentioned (p=0.04)
-  ls_sort_size          omitted: not mentioned (p=0.03)
-  ls_recursive          omitted: not mentioned (p=0.15)
+  hidden                omitted: not mentioned (p=0.17)
+  details               omitted: not mentioned (p=0.05)
 dry-run: nothing ran. Run again without --dry-run to execute.
 
 $ jev "list all files in this directory"
 cmd
 go.mod
 internal
+README.md
+scripts
 ```
 
-jev is a System One model from [TypeSafe AI](https://docs.typesafe.ai). It does
-not generate text. It answers typed questions (Choice, Score, Noul) about a
-closed catalog of commands, and this program assembles the argv from the
-answers.
+The call is never written by a language model. It answers typed questions about
+a fixed set of tools and their parameters, and code binds the filled call to an
+argv. [TypeSafe's jev](https://docs.typesafe.ai) supplies the answers.
 
 ## Why it works this way
 
-A CLI that asks an LLM to "return the shell command" has two problems: the
-command can be anything, and the generated text has to be parsed back into
-something runnable. Both disappear here by construction.
+Asking an LLM to "return the shell command" has two problems: the command can be
+anything, and the generated text has to be parsed back into something runnable.
+Both disappear by construction.
 
-- **Nothing is generated.** Every string that reaches the command line was
-  either authored in this repository (the programs, the flags) or confirmed to
-  exist by code (paths, patterns, search terms). There is no path from the
-  model's answer to an arbitrary command: an answer is always a key from a set
-  we defined.
+- **The model fills parameters, it does not write commands.** Every token on the
+  command line comes from a parameter value this repository authored, or from a
+  path code confirmed exists. There is no path from an answer to an arbitrary
+  command: an answer is always a key from a set we defined.
 - **Nothing goes through a shell.** The command is a `[]string` run with
   `exec.CommandContext`. There is no `sh -c`, so quotes, `;`, `|`, `$()` and
   backticks cannot become a second command.
-- **Code decides whether to run.** Calibrated confidence and probabilities
-  choose between running, asking and refusing. A command runs only if the
-  choice was confident, the guardrails were satisfied, and the catalog entry is
-  read-only. Anything else stops and explains itself, and `--dry-run` shows the
-  command without running it.
-- **The vocabulary is closed.** A command that is not in the catalog is never
-  invented. The honest answer is "I cannot do that", with the closest
-  candidates and their probabilities.
+- **Code decides whether to call.** Calibrated confidence and probabilities
+  choose between calling, asking and refusing. A call runs only if the tool
+  choice was confident and the guardrails passed; `--dry-run` shows it without
+  running anything.
+- **The vocabulary is closed.** A tool that is not in the catalog is never
+  invented. The honest answer is "I cannot do that", with the closest candidates
+  and their probabilities.
 
 ## Install
 
@@ -59,17 +55,8 @@ $ go install github.com/harlleyoliveira/jev-cli/cmd/jev@latest
 No external dependencies, standard library only. Make sure `$HOME/go/bin` is on
 your PATH.
 
-The API key comes from `TYPESAFE_API_KEY`, from the config file, or from
-`--api-key-file`. It is never a normal flag, because arguments are visible in
-the process list.
-
-```console
-$ export TYPESAFE_API_KEY=...
-$ jev "where am I"
-```
-
-Reading it from the macOS Keychain keeps it out of your dotfiles and your shell
-history:
+The API key comes from `TYPESAFE_API_KEY`. Reading it from the macOS Keychain
+keeps it out of your dotfiles and your shell history:
 
 ```sh
 security add-generic-password -a "$USER" -s TYPESAFE_API_KEY -w   # prompts for the secret
@@ -84,196 +71,233 @@ jev [options] "phrase in natural language"
 
 | Option | Effect |
 | --- | --- |
-| (default) | run the resolved command |
-| `-n`, `--dry-run` | show the resolved command and the decisions, then stop |
-| `-x`, `--execute` | run the resolved command (already the default) |
-| `--allow-write` | allow commands that are not read-only |
-| `-j`, `--json` | JSON result; the executed command's output is captured |
-| `--path VALUE` | use this path, without asking the model |
-| `--pattern VALUE` | use this file name pattern |
-| `--term VALUE` | use this search text |
-| `-v`, `--explain` | show the request, the raw response, notes and token usage |
-| `--commands` | list the closed catalog and what is available here |
-| `-m`, `--model` | model (default `jev-latest`) |
-| `--base-url` | API host |
-| `--max-entries` | maximum directory entries in the state |
-| `--min-confidence` | minimum confidence to act (default `0.5`) |
-| `--timeout` | API call timeout, in seconds |
-| `--no-color` | no colours |
+| (default) | run the resolved call |
+| `-n`, `--dry-run` | show the resolved call and the parameter decisions, then stop |
+| `-x`, `--execute` | run it (already the default; cancels an earlier `--dry-run`) |
+| `--tools [NAME]` | list the tools, or show one tool's parameters and its manual page |
+| `-h`, `--help` | usage |
+| `-V`, `--version` | version |
 
-The exit code of the executed command is propagated. jev-cli's own codes are
-`1` error, `2` unresolved (ambiguous or outside the catalog), `3` blocked by a
-guardrail, and `4` no API key.
+Environment: `TYPESAFE_API_KEY` (required), `JEV_BASE_URL` (API host, useful for
+pointing the CLI at a fake server), `NO_COLOR`.
+
+The exit code of the run command is propagated. jev-cli's own codes are `1`
+error, `2` unresolved (ambiguous or outside the catalog), `3` blocked by a
+guardrail, `4` no API key.
 
 ## How it works
 
 ```
 phrase
   |
-  +- CODE   probe the environment (env.Probe)
-  |           cwd, directory listing (counted and filtered here),
-  |           git repository, binaries on PATH, and the candidates
-  |           lifted out of the phrase: paths that exist, globs, terms
+  +- CODE   probe the environment
+  |           cwd, directory listing (counted and filtered here), binaries on
+  |           PATH, and the candidates lifted out of the phrase: paths that
+  |           exist, globs, words worth searching for
   |
   +- ONE REQUEST   POST /v1/systemone
   |           state     = phrase + filtered environment
-  |           questions =
-  |              intent                        Choice over the catalog
-  |              target_path                   Choice over real paths
-  |              name_pattern / search_terms / flags   (speculative)
-  |              <slot>?                       Noul "did the user mention this?"
-  |              guardrail.injection           Noul
-  |              guardrail.destructive_request Noul
-  |              guardrail.intent_clear        Noul
-  |              guardrail.severity            Score
+  |           questions = which tool, one per parameter value, one gate per
+  |                       gated parameter, and the guardrails
   |
-  +- CODE   read only the winning command's answers (catalog.Assemble)
-  |           apply the gates, build the argv
+  +- CODE   fill the call, bind it to argv, apply the gates
   |
   +- CODE   run it, or stop and show it with --dry-run
 ```
 
 Every question goes in a single request. The model evaluates them in parallel,
-so a speculative question about a command that lost costs tokens, not latency.
-This is the speculative fan-out pattern from the TypeSafe documentation.
+so a speculative question about a tool that lost costs tokens, not latency.
 
-### Five patterns from the docs
+### The layer
 
-1. **Function calling.** Each closed-set argument becomes a Choice whose keys
-   are exactly the accepted values. Nothing has to map a label back to an
-   argument: the answer is the token.
-2. **`stated` (`<slot>?`).** Before using an optional argument, flag or value, a
-   Noul asks whether the user *said anything* about it. If not, the declared
-   default stands. This is what keeps a question answered in silence from
-   becoming a decision: against the real model, "list all files in this
-   directory" answers the hidden-files flag at **p=0.52**, just over the 0.5
-   line, and the command used to come out as `ls -a .`. The same phrase puts the
-   gate at p=0.18, so the flag stays off. When the request does mention hidden
-   files, the gate rises to 0.93 and `-a` appears.
-3. **Pre-parsed value extraction.** Paths, patterns and search terms are open
-   strings, and the model cannot produce them. Code over-finds with regex and
-   `stat`, and the model only *selects* among the candidates. Everything comes
-   back verbatim.
-4. **Confidence-gated routing and guardrails.** The gates use the numbers from
-   the documentation (0.5 for an ambiguous intent, 0.35 to review, 0.70 to act
-   on a hazard, 2.0 for severity) and are configurable. The guardrail questions
-   run in the same request, so they cost no extra latency.
-5. **Speculative fan-out.** All slot questions for every available command are
-   asked up front, and code reads only the ones belonging to the winner.
+A tool is a name, a description and a list of typed parameters:
 
-### Counting and arithmetic stay in code
-
-The model does not count reliably and Score levels calibrate poorly to
-magnitudes, so `entry_count`, search depth and ordering are computed here and
-never asked of the model.
-
-## The catalog
-
-Everything this CLI can run, and nothing else:
-
-| Command | What it does |
-| --- | --- |
-| `list_directory` | list what is inside a directory |
-| `find_files` | find files by name, with a bounded depth |
-| `search_text` | search inside file contents (`rg`, or `grep`), with an optional file name filter |
-| `show_file` | print a file, all of it or one end |
-| `count_lines` | count lines |
-| `disk_usage` | size of a path |
-| `file_info` | what kind of file something is |
-| `report_working_directory` | print the current directory |
-| `git_status`, `git_log`, `git_diff` | repository state, history and diff |
-
-All of them are **read-only**. `--commands` lists the catalog and marks what is
-unavailable in the current environment (for example the `git_` commands outside
-a repository).
-
-Adding a command means adding an entry in
-[`internal/catalog/entries.go`](internal/catalog/entries.go): an argv template
-with placeholders, the slots that decide each placeholder, and the contrastive
-descriptions (what it is, what it is not for) that keep neighbouring commands
-apart.
-
-## Calibration against the real model
-
-The thresholds above are starting points. These are the numbers the real jev
-returned for this project, and what they changed:
-
-| Phrase | Before | After |
-| --- | --- | --- |
-| `list all files in this directory` | `ls -a .` (flag at 0.52, a false positive) | `ls .` (gate at 0.18) |
-| `list everything including hidden files` | `ls -a .` | `ls -a .` (p=0.98, correct) |
-| `search for TODO in the go files` | `rg -e TODO .` (the file filter was ignored) | `rg -g '*.go' -e TODO .` |
-| `what changed` | `ask` with nothing useful to show | `ask` plus a `git status` suggestion plus candidates |
-
-The confidence gates remain the most likely place to need tuning. `what changed`
-stops at `ask` because the model splits between `git_status` and `git_diff`
-(0.40), which is real ambiguity rather than an error. If you would rather it
-acted there, lower `min_confidence` in the config; the command is still
-read-only.
-
-## Known limits
-
-- **No command chaining.** No pipes: one argv, one program. A phrase that asks
-  for two things lands on `ask` or `unsupported`. An internal pipeline is the
-  natural next step.
-- **Nothing is written.** Requests to change something are refused with that
-  explanation, rather than answered with something adjacent. Writing would need
-  a real risk taxonomy; the flags exist (`ReadOnly`, `--allow-write`), but no
-  entry uses them yet.
-- **A closed vocabulary is closed.** What is not in the catalog does not happen.
-  The honest output is `unsupported`, with the most likely candidates and their
-  probabilities.
-- **255 options per Choice.** The directory listing is bounded by
-  `max_entries`. A command whose candidates do not exist, or would not fit,
-  simply is not offered in that invocation, instead of becoming a 422.
-- **The state is not hostile to the model.** Free text, including file names,
-  can influence answers. Hence the filtered and bounded listing, the injection
-  guardrail, and a program allowlist as the last line of defence.
-
-## Configuration
-
-`~/.config/jev/config.json` (or `$XDG_CONFIG_HOME/jev/config.json`, or
-`$JEV_CONFIG`). All keys are optional:
-
-```json
-{
-  "api_key": "",
-  "model": "jev-latest",
-  "base_url": "https://api.typesafe.ai",
-  "max_entries": 120,
-  "min_confidence": 0.5,
-  "clarity_threshold": 0.35,
-  "destructive_threshold": 0.35,
-  "injection_threshold": 0.7,
-  "severity_threshold": 2.0,
-  "timeout_seconds": 30,
-  "no_color": false,
-  "allow_write": false
+```go
+Tool{
+    Name: "list_directory",
+    What: "List what is inside a directory ...",
+    Bind: func(e *env.Env) (Binding, bool) {
+        return Binding{
+            Argv: []string{"ls", "{hidden}", "{details}", "{target}"},
+            Params: []Param{
+                targetParam(),                                  // closed set, required
+                {Kind: FlagParam, Name: "hidden",  Argv: []string{"-a"}, Gated: true, ...},
+                {Kind: FlagParam, Name: "details", Argv: []string{"-l"}, Gated: true, ...},
+            },
+        }, true
+    },
 }
 ```
 
-Environment variables: `TYPESAFE_API_KEY`, `JEV_MODEL`, `JEV_BASE_URL`,
-`JEV_CONFIG`, `NO_COLOR`. If the file holds an API key and other users can read
-it, the CLI says so.
+The model fills the parameters and code binds them, so the question set is
+derived from the parameters rather than hand written per command. The shell is
+an implementation detail of `Argv`: nothing the model sees is phrased in terms
+of flags. `catalog.Result` carries both the typed call (`Call{Name, Args}`) and
+its binding (`Argv`).
 
-## Development
+### Four patterns from the TypeSafe documentation
+
+1. **Function calling.** A closed parameter becomes a Choice whose keys are
+   exactly the accepted values, so nothing has to map a label back to an
+   argument: the answer is the value.
+2. **The `stated` gate.** Before a gated parameter is used, a Noul asks whether
+   the request *said anything* about it. If not, the declared default stands.
+   This is what keeps a question answered in silence from becoming a decision:
+   against the real model, "list all files in this directory" answers the
+   hidden-files flag at **p=0.52**, just over the 0.5 line, and the call used to
+   come out as `ls -a .`. The same phrase puts the gate at p=0.17.
+3. **Pre-parsed value extraction.** Paths, globs and search terms are open
+   strings, and the model cannot produce them. Code over-finds with regex and
+   `stat`, and the model only picks among the candidates. Everything comes back
+   verbatim.
+4. **Confidence-gated routing and guardrails.** The gates use the numbers from
+   the documentation (0.5 for an unclear tool choice, 0.35 to review, 0.70 to
+   act on a hazard, 2.0 for severity). The guardrail questions ride along in the
+   same request, so they cost no extra latency.
+
+Counting and arithmetic stay in code: the model does not count reliably, so
+`entry_count` and the listing caps are computed here.
+
+## The catalog
+
+Four read-only tools, and nothing else:
+
+| Tool | What it does |
+| --- | --- |
+| `list_directory` | list a directory, with optional hidden entries and per-entry detail |
+| `search_text` | search inside file contents with `rg` or `grep`, with an optional file name filter |
+| `show_file` | print a file, all of it or one end of it |
+| `report_working_directory` | print the current directory |
+| `read_manual` | print the manual page of one of the programs above |
+
+Adding a tool means adding one function in
+[`internal/catalog/entries.go`](internal/catalog/entries.go): a name, the
+description the model chooses by, and the parameters with their binding.
+
+### Navigating the catalog
+
+The closed vocabulary is documented, so you do not have to guess at it:
+
+```console
+$ jev --tools
+tools (closed vocabulary)
+    list_directory             List what is inside a directory: ...
+      parameters: target, hidden, details
+    search_text                Search for a piece of text inside the contents of files.
+      parameters: terms, target, ignore_case, files
+    show_file                  Print the contents of a file, all of it or just one end of it.
+      parameters: how_much, target
+    report_working_directory   Print the absolute path of the directory the command is running in.
+      parameters:
+    read_manual                Print the manual page of one of the programs this catalog uses.
+      parameters: program
+
+$ jev --tools search_text
+search_text
+  Search for a piece of text inside the contents of files. ...
+  parameters
+  terms                 [choice] the literal text to look for
+  target                [choice] the path the call acts on
+  ignore_case           [flag] matching that ignores letter case (asked only if the request mentions it)
+  files                 [choice] a file name filter for the search (default any) (asked only if the request mentions it)
+  binds to              rg {ignore_case} {files} -e {terms} {target}
+  manual                man rg   (or rg --help)
+```
+
+`--tools` needs no key and no network: it is the layer describing itself, and it
+ends with the `man` or `--help` command to read the underlying program. When a
+phrase needs the documentation itself, `read_manual` turns that into a call, for
+example `man -P cat rg`. The pager is overridden on purpose: `man` on a terminal
+would open one and wait for input, which is exactly the interactive trap a tool
+call must not fall into.
+
+What this deliberately does *not* do is derive the parameters from `man`
+automatically. `ls` alone has around fifty flags, and enumerating them would
+blow up the question battery, which is already about 3,000 tokens for five
+tools, and would cost accuracy for options nobody asked about. The useful half
+of that idea is to pull the *descriptions* for the curated parameter list from
+`--help`, with a checked-in cache, so the wording stops being hand written.
+
+## Evals
+
+The deterministic tests cannot tell you whether the model answers well, only
+what happens once it has answered. The eval is the other half: it runs the real
+model over a fixed set of phrases and compares each decision against what a
+correct call looks like.
+
+```console
+$ go run ./cmd/jev-eval            # one run over evals/cases.json
+$ go run ./cmd/jev-eval -n 3       # three runs, to see agreement
+```
+
+Cases live in [`evals/cases.json`](evals/cases.json) and assert a verdict, a
+tool, an exact argv or required/forbidden tokens. Each case records *why* it
+exists. An eval never executes a command: it judges the decision, never the
+effect.
+
+The current run, against `jev-1.13.0`:
+
+```
+15/15 runs passed, agreement 15/15 cases, 4.9s, 47337 tokens, jev-1.13.0
+```
+
+45/45 over three consecutive runs, with every case producing an identical
+decision each time.
+
+The eval earned its place immediately. Its first run failed two cases, and both
+were real:
+
+| Case | Was | Why it failed | Now |
+| --- | --- | --- | --- |
+| `list the files with details` | `ls .` | the gate asked about "permissions, size, owner or date", so "with details" did not match it | `ls -l .` |
+| `grep for the word timeout` | `ask` | the clarity guardrail demanded a named target, but an unstated parameter takes its default | `rg -e timeout .` |
+
+Neither was a threshold problem. Both questions were phrased in terms of shell
+flags rather than in terms of a tool's parameters, which is the whole point of
+having the layer.
+
+## Tests
 
 ```console
 $ go test ./...
 $ go vet ./...
-$ ./scripts/test-sheet.sh          # a human-readable mapping check, dry run only
+$ ./scripts/test-sheet.sh          # mapping check by eye, dry run only
 ```
 
-The suite covers the HTTP client (including retries on 429 and 529 and the
-refusal to retry 401 and 422), argv assembly (exclusive flag groups, flag
-dependencies, defaults, forced literals), candidate extraction, the guardrail
-verdicts, and an end-to-end test that runs the binary against a fake TypeSafe
-server and actually executes the resolved `ls`.
+What the deterministic suite covers, and what it cannot:
 
-It also asserts the invariants the design rests on: the request body carries
-exactly `state`, `model` and `questions` with only noul, choice and score
-questions; every token in the argv was authored in the catalog, checked across
-more than a thousand answer combinations; and no command can reach a shell.
+- the HTTP client against a real server: retries on 429 and 529, refusals on 401
+  and 422, and a loud failure when an answer is missing;
+- the environment probe against a real filesystem and real processes;
+- the filler against synthetic answers: gated flags, defaults, the escape hatch,
+  and an answer outside the closed set failing loudly;
+- the verdicts: act, ask, unsupported, blocked, and that nothing but `act` ever
+  carries a runnable command;
+- an end-to-end run of the binary against a fake TypeSafe server that really
+  executes the resolved `ls`;
+- the invariants: the request body carries exactly `state`, `model` and
+  `questions` with only noul, choice and score questions; every token in the
+  argv was authored in the catalog, checked across thousands of answer
+  combinations; and no tool can reach a shell.
+
+What none of that covers is whether the real model picks the right tool and the
+right parameter values. That is what the eval is for.
+
+## Known limits
+
+- **No command chaining.** No pipes: one call, one program. A phrase that asks
+  for two things lands on `ask` or `unsupported`.
+- **Nothing is written.** Requests to change something are refused with that
+  explanation, rather than answered with something adjacent. The flags exist
+  (`ReadOnly`, and the decision layer checks them), but no tool uses them yet.
+- **A closed vocabulary is closed.** What is not in the catalog does not happen,
+  and the honest output is `unsupported`.
+- **255 values per Choice.** The directory listing is capped at 120 entries. A
+  tool whose candidates do not exist, or would not fit, is not offered in that
+  invocation instead of becoming a 422.
+- **The state is not hostile to the model.** Free text, including file names,
+  can influence answers. Hence the filtered and bounded listing, the injection
+  guardrail, and a program allowlist as the last line of defence.
 
 ## License
 

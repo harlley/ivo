@@ -12,7 +12,6 @@
 package env
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +19,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"time"
 )
 
 // Limits on how much context we are willing to put in front of the model.
@@ -54,14 +52,6 @@ type Candidates struct {
 	Terms []string
 }
 
-// Git describes the repository containing the working directory, if any.
-type Git struct {
-	IsRepo bool
-	Root   string
-	Branch string
-	Dirty  bool
-}
-
 // Env is everything jev-cli knows about the current invocation before it asks
 // the model anything.
 type Env struct {
@@ -79,9 +69,7 @@ type Env struct {
 	// fatal error.
 	EntriesError string
 
-	Git      Git
-	Bins     map[string]bool
-	ReadOnly bool // whether the working directory is writable; advisory
+	Bins map[string]bool
 
 	Candidates Candidates
 }
@@ -99,8 +87,6 @@ type ProbeOptions struct {
 	// Binaries are the programs the catalog might need, to be looked up on
 	// PATH.
 	Binaries []string
-	// Timeout bounds the helper processes (git) we shell out to. Default 3s.
-	Timeout time.Duration
 }
 
 // Probe inspects the machine. It never fails on a missing directory listing or
@@ -115,11 +101,6 @@ func Probe(opts ProbeOptions) (*Env, error) {
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	timeout := opts.Timeout
-	if timeout <= 0 {
-		timeout = 3 * time.Second
-	}
-
 	e := &Env{
 		Request: strings.TrimSpace(opts.Request),
 		OS:      runtime.GOOS,
@@ -129,12 +110,7 @@ func Probe(opts ProbeOptions) (*Env, error) {
 		Bins:    probeBins(opts.Binaries),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
 	e.Entries, e.EntryCount, e.Truncated, e.EntriesError = readEntries(cwd, opts.MaxEntries)
-	e.Git = probeGit(ctx, cwd)
-	e.ReadOnly = !isWritable(cwd)
 	e.Candidates = extractCandidates(e.Request, cwd, home)
 
 	return e, nil
@@ -178,54 +154,8 @@ func readEntries(dir string, max int) (entries []Entry, total int, truncated boo
 	return all, total, false, ""
 }
 
-func isWritable(dir string) bool {
-	f, err := os.CreateTemp(dir, ".jev-probe-*")
-	if err != nil {
-		return false
-	}
-	name := f.Name()
-	f.Close()
-	os.Remove(name)
-	return true
-}
-
 // probeGit walks up looking for a .git directory before spawning git, so the
 // common non-repo case costs nothing.
-func probeGit(ctx context.Context, cwd string) Git {
-	root := findUp(cwd, ".git")
-	if root == "" {
-		return Git{}
-	}
-	g := Git{IsRepo: true, Root: root}
-	if out, err := runGit(ctx, cwd, "branch", "--show-current"); err == nil {
-		g.Branch = strings.TrimSpace(out)
-	}
-	if out, err := runGit(ctx, cwd, "status", "--porcelain"); err == nil {
-		g.Dirty = strings.TrimSpace(out) != ""
-	}
-	return g
-}
-
-func findUp(dir, name string) string {
-	for {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
-func runGit(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	return string(out), err
-}
-
 var (
 	quotedRe = regexp.MustCompile("\"([^\"]+)\"|'([^']+)'|`([^`]+)`")
 	extRe    = regexp.MustCompile(`(?:^|[\s,;:(])(\.[A-Za-z][A-Za-z0-9]{0,7})\b`)

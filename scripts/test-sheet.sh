@@ -30,15 +30,10 @@ EXECUTE=0
 # phrase | what to expect
 CASES=(
   "list all files in this directory|ls .            (no -a: the request says nothing about hidden files)"
-  "list everything in detail, including hidden files|ls -a -l .       (the flag appears when it is asked for)"
-  "how much space does this directory take|du -h -s ."
+  "list everything in detail, including hidden files|ls -a -l .       (both flags appear when asked for)"
   "show the contents of README.md|cat README.md"
-  "what kind of file is go.mod|file go.mod"
   "search for TODO in the go files|rg -g '*.go' -e TODO ."
-  "how many lines does the README.md have|wc -l README.md"
   "where am I|pwd"
-  "show me the last commits|git log ..."
-  "what is the diff|git diff ..."
 )
 
 hr() { printf '%s\n' "------------------------------------------------------------"; }

@@ -7,23 +7,20 @@
 // commands and a fixed set of options, and this program assembles the argv
 // from the answers.
 //
-// The command runs once the gates pass: the model was confident, the
-// guardrails were satisfied, and the catalog entry is read-only. Pass
-// --dry-run to see the resolved command without running it.
+// The command runs once the gates pass: the model was confident, the guardrails
+// were satisfied, and the catalog entry is read-only. Pass --dry-run to see the
+// resolved command without running it.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/harlleyoliveira/jev-cli/internal/catalog"
-	"github.com/harlleyoliveira/jev-cli/internal/config"
 	"github.com/harlleyoliveira/jev-cli/internal/env"
 	"github.com/harlleyoliveira/jev-cli/internal/resolve"
 	"github.com/harlleyoliveira/jev-cli/internal/run"
@@ -35,20 +32,27 @@ import (
 // -ldflags "-X main.version=...".
 var version = "0.1.0"
 
-// Exit codes. 0-4 are jev-cli's own; a non-zero exit from an executed command
+const (
+	// maxEntries caps how many directory entries go into the state.
+	maxEntries = 120
+	// apiTimeout bounds one call to the API.
+	apiTimeout = 30 * time.Second
+)
+
+// Exit codes. 1-4 are jev-cli's own; a non-zero exit from an executed command
 // is propagated unchanged.
 const (
 	exitOK         = 0
 	exitError      = 1
-	exitUnresolved = 2 // nothing was resolved: ambiguous or unsupported
+	exitUnresolved = 2 // nothing was resolved: ambiguous or outside the catalog
 	exitBlocked    = 3 // a guardrail stopped it
 	exitNoKey      = 4 // no usable API key
 )
 
 func main() { os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr)) }
 
-// realMain takes its streams explicitly so the whole pipeline can be tested
-// end to end, including the argument parsing and the output.
+// realMain takes its streams explicitly so the whole pipeline can be tested end
+// to end, including argument parsing and output.
 func realMain(args []string, stdout, stderr io.Writer) int {
 	opts, phrase, err := parseArgs(args)
 	if err != nil {
@@ -57,7 +61,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return exitUnresolved
 	}
 	if opts.help {
-		printHelp(stdout)
+		fmt.Fprint(stdout, helpText)
 		return exitOK
 	}
 	if opts.version {
@@ -65,22 +69,12 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 
-	cfg, cfgPath, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(stderr, "jev: config: %v\n", err)
-		return exitError
-	}
-	applyFlags(&cfg, opts)
-
-	color := !cfg.NoColor && os.Getenv("NO_COLOR") == "" && ui.ColorSupported(stdout)
+	color := os.Getenv("NO_COLOR") == "" && ui.ColorSupported(stdout)
 	printer := ui.New(color, stdout, stderr)
-	for _, w := range cfg.Warnings() {
-		printer.Warn("warning: %s", w)
-	}
 
 	systemEnv, err := env.Probe(env.ProbeOptions{
 		Request:    phrase,
-		MaxEntries: cfg.MaxEntries,
+		MaxEntries: maxEntries,
 		Binaries:   catalog.Binaries(),
 	})
 	if err != nil {
@@ -88,169 +82,116 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 
-	if opts.listCommands {
-		printCommands(printer, systemEnv)
+	// The catalog's own documentation needs neither the model nor a key, and
+	// takes the phrase as an optional tool name.
+	if opts.tools {
+		renderTools(printer, systemEnv, phrase)
 		return exitOK
 	}
+
 	if strings.TrimSpace(phrase) == "" {
 		printer.Error("missing the phrase, for example: jev \"list all files in this directory\"")
 		return exitUnresolved
 	}
 
-	apiKey := cfg.APIKey
-	if opts.apiKeyFile != "" {
-		data, err := os.ReadFile(opts.apiKeyFile)
-		if err != nil {
-			printer.Error("could not read --api-key-file: %v", err)
-			return exitError
-		}
-		apiKey = strings.TrimSpace(string(data))
-	}
+	apiKey := strings.TrimSpace(os.Getenv(typesafe.EnvAPIKey))
 	if apiKey == "" {
-		printer.Error("no API key. Set TYPESAFE_API_KEY, or write {\"api_key\": \"...\"} to %s", cfgPath)
+		printer.Error("no API key. Set %s, for example:", typesafe.EnvAPIKey)
+		printer.Hint(`  export %s="$(security find-generic-password -a "$USER" -s %s -w)"`,
+			typesafe.EnvAPIKey, typesafe.EnvAPIKey)
 		return exitNoKey
 	}
 
-	forced := map[string]string{}
-	if opts.path != "" {
-		forced["target_path"] = opts.path
-	}
-	if opts.pattern != "" {
-		forced["name_pattern"] = opts.pattern
-	}
-	if opts.term != "" {
-		forced["search_terms"] = opts.term
-	}
-
-	plan, err := resolve.Build(systemEnv, resolve.Options{Model: cfg.Model, Forced: forced})
+	plan, err := resolve.Build(systemEnv)
 	if err != nil {
 		printer.Error("%v", err)
 		return exitError
 	}
 
-	if opts.explain {
-		printer.Title("request sent")
-		if pretty, err := json.MarshalIndent(plan.Request, "", "  "); err == nil {
-			printer.Say("%s", pretty)
-		}
-	}
-
-	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 	defer cancel()
 
-	client := typesafe.NewClient(apiKey, typesafe.WithBaseURL(cfg.BaseURL))
+	client := typesafe.NewClient(apiKey, typesafe.WithBaseURL(baseURL()))
 	result, err := client.SystemOne(ctx, plan.Request)
 	if err != nil {
 		if typesafe.IsAuthError(err) {
-			printer.Error("the API rejected the API key. Check %s or TYPESAFE_API_KEY.", cfgPath)
+			printer.Error("the API rejected the API key. Check %s.", typesafe.EnvAPIKey)
 			return exitNoKey
 		}
 		printer.Error("%v", err)
 		return exitError
 	}
 
-	decision, err := plan.Decide(result.Response, resolve.DecideOptions{
-		MinConfidence:        cfg.MinConfidence,
-		ClarityThreshold:     cfg.ClarityThreshold,
-		DestructiveThreshold: cfg.DestructiveThreshold,
-		InjectionThreshold:   cfg.InjectionThreshold,
-		SeverityThreshold:    cfg.SeverityThreshold,
-		AllowWrite:           cfg.AllowWrite,
-	})
+	decision, err := plan.Decide(result.Response, resolve.DecideOptions{})
 	if err != nil {
 		printer.Error("%v", err)
 		return exitError
 	}
 
-	if opts.explain {
-		printer.Title("raw response")
-		printer.Say("%s", string(result.Raw))
-	}
-
-	allow := catalog.Allowlist(plan.Specs, systemEnv)
-
-	// A dry run stops here: the user sees the command and decides.
+	// Anything but a confident, unblocked verdict stops here and explains
+	// itself. This is the only thing standing between a phrase and a command,
+	// so it is deliberately the last thing before execution.
 	if decision.Verdict != resolve.VerdictAct {
-		return renderNoCommand(printer, opts, plan, decision, result)
+		return renderNoCommand(printer, decision, plan)
 	}
+
 	if opts.dryRun {
-		return renderDryRun(printer, opts, plan, decision, result, allow)
+		renderDryRun(printer, decision)
+		return exitOK
 	}
 
 	outcome, err := run.Do(ctx, decision.Argv, run.Options{
-		Execute:        true,
-		Allow:          allow,
-		Capture:        opts.json,
-		MaxOutputBytes: run.DefaultMaxOutputBytes,
-		Stdin:          os.Stdin,
-		Stdout:         stdout,
-		Stderr:         stderr,
+		Execute: true,
+		Allow:   catalog.Allowlist(plan.Bindings, systemEnv),
+		Stdin:   os.Stdin,
+		Stdout:  stdout,
+		Stderr:  stderr,
 	})
 	if err != nil {
 		printer.Error("%v", err)
 		return exitError
 	}
-	if opts.json {
-		emitJSON(printer, plan, decision, result, &outcome)
+	return outcome.ExitCode
+}
+
+// baseURL is the API host. It is an environment variable rather than a flag so
+// the CLI surface stays small, and so the tests can point at a fake server.
+func baseURL() string {
+	if v := strings.TrimSpace(os.Getenv("JEV_BASE_URL")); v != "" {
+		return v
 	}
-	if outcome.ExitCode != 0 {
-		return outcome.ExitCode
-	}
-	return exitOK
+	return typesafe.DefaultBaseURL
 }
 
 // renderDryRun prints what would run and stops.
-func renderDryRun(p *ui.Printer, opts cliOptions, plan *resolve.Plan, d *resolve.Decision, res *typesafe.Result, allow []string) int {
-	if opts.json {
-		emitJSON(p, plan, d, res, nil)
-		return exitOK
-	}
+func renderDryRun(p *ui.Printer, d *resolve.Decision) {
 	p.Command(ui.ShellQuote(d.Argv))
-	p.Field("command", fmt.Sprintf("%s, confidence %.2f", d.Command.ID, d.Intent.Confidence))
-	if d.Severity > 0 {
-		p.Field("severity", fmt.Sprintf("%.2f", d.Severity))
-	}
-	printNotes(p, d, opts.explain)
-	if opts.explain {
-		p.Field("questions", fmt.Sprintf("%d", len(plan.Request.Questions)))
-		p.Field("usage", fmt.Sprintf("%d input tokens, %d output tokens", res.Response.Usage.InputTokens, res.Response.Usage.OutputTokens))
-		p.Field("latency", fmt.Sprintf("%d ms (%d attempt(s))", res.Latency.Milliseconds(), res.Attempts))
-		p.Field("binaries", strings.Join(allow, ", "))
-	}
+	p.Field("command", fmt.Sprintf("%s, confidence %.2f", d.Tool.Name, d.Intent.Confidence))
+	p.Field("severity", fmt.Sprintf("%.2f", d.Severity))
+	printNotes(p, d)
 	p.Hint("dry-run: nothing ran. Run again without --dry-run to execute.")
-	return exitOK
 }
 
 // renderNoCommand explains why nothing will run.
-func renderNoCommand(p *ui.Printer, opts cliOptions, plan *resolve.Plan, d *resolve.Decision, res *typesafe.Result) int {
-	if opts.json {
-		emitJSON(p, plan, d, res, nil)
-		switch d.Verdict {
-		case resolve.VerdictBlocked:
-			return exitBlocked
-		default:
-			return exitUnresolved
-		}
-	}
-
+func renderNoCommand(p *ui.Printer, d *resolve.Decision, plan *resolve.Plan) int {
 	switch d.Verdict {
 	case resolve.VerdictBlocked:
 		p.Error("blocked: %s", d.Reason)
 	case resolve.VerdictUnsupported:
 		p.Warn("I cannot do that: %s", d.Reason)
-		p.Hint("this CLI only runs: %s", strings.Join(commandIDs(plan.Commands), ", "))
+		p.Hint("this CLI only runs: %s", strings.Join(toolNames(plan.Tools), ", "))
+		p.Hint("see `jev --tools` for the tool list, or `jev --tools <name>` for one tool")
 	case resolve.VerdictAsk:
 		p.Warn("not going to guess: %s", d.Reason)
 		// A command that was resolved but gated is still worth showing: it is
 		// the tool's best reading of the phrase, and seeing it is how the user
 		// decides whether to rephrase. It is labelled so it can never be
 		// mistaken for something that ran.
-		if len(d.Argv) > 0 && d.Command != nil {
+		if len(d.Argv) > 0 && d.Tool != nil {
 			p.Title("suggestion (not executed)")
 			p.Command(ui.ShellQuote(d.Argv))
-			p.Field("command", d.Command.ID)
-			printNotes(p, d, opts.explain)
+			p.Field("command", d.Tool.Name)
+			printNotes(p, d)
 		}
 	default:
 		p.Warn("%s", d.Reason)
@@ -266,13 +207,11 @@ func renderNoCommand(p *ui.Printer, opts cliOptions, plan *resolve.Plan, d *reso
 			p.Line("%s", line)
 		}
 	}
-	if len(d.Guardrails) > 0 {
-		p.Field("guardrails", fmt.Sprintf("injection %.2f | destructive %.2f | clarity %.2f | severity %.2f",
-			d.Guardrails["guardrail.injection"].Noul,
-			d.Guardrails["guardrail.destructive_request"].Noul,
-			d.Guardrails["guardrail.intent_clear"].Noul,
-			d.Severity))
-	}
+	p.Field("guardrails", fmt.Sprintf("injection %.2f | destructive %.2f | clarity %.2f | severity %.2f",
+		d.Guardrails["guardrail.injection"].Noul,
+		d.Guardrails["guardrail.destructive_request"].Noul,
+		d.Guardrails["guardrail.intent_clear"].Noul,
+		d.Severity))
 	p.Hint("nothing ran.")
 
 	if d.Verdict == resolve.VerdictBlocked {
@@ -282,145 +221,119 @@ func renderNoCommand(p *ui.Printer, opts cliOptions, plan *resolve.Plan, d *reso
 }
 
 // printNotes shows every decision that shaped the command line. Being able to
-// read *why* the command looks the way it does is the point of the tool, so
-// the default view keeps all of them and --explain adds the raw exchange.
-func printNotes(p *ui.Printer, d *resolve.Decision, explain bool) {
+// read why the command looks the way it does is the point of the tool.
+func printNotes(p *ui.Printer, d *resolve.Decision) {
 	for _, note := range d.Notes {
-		if !note.Answered && !explain {
-			continue
-		}
-		p.Field(note.Slot, note.Detail)
+		p.Field(note.Param, note.Detail)
 	}
 }
 
-func printCommands(p *ui.Printer, e *env.Env) {
-	available := catalog.Available(catalog.All(), e)
-	ids := map[string]bool{}
-	for _, c := range available {
-		ids[c.ID] = true
-	}
-	p.Title("catalog (closed vocabulary)")
-	for _, c := range catalog.All() {
-		mark := "  "
-		if !ids[c.ID] {
-			mark = "| "
-		}
-		kind := "read"
-		if !c.ReadOnly {
-			kind = "write"
-		}
-		p.Line("%s%-24s [%s]", mark, c.ID, kind)
-		p.Line("    %s", c.What)
-		if c.NotFor != "" {
-			p.Line("    not for: %s", c.NotFor)
-		}
-		if !ids[c.ID] {
-			missing := make([]string, 0, len(c.Needs))
-			for _, bin := range c.Needs {
-				if !e.Has(bin) {
-					missing = append(missing, bin)
-				}
-			}
-			if len(missing) > 0 {
-				p.Line("    unavailable: missing %s", strings.Join(missing, ", "))
-			} else {
-				p.Line("    unavailable in this invocation: there are no candidates to choose from (it depends on the phrase)")
+// renderTools prints the catalog. With no argument it lists every tool; with a
+// tool name it prints that tool's parameters and the manual page to read next.
+func renderTools(p *ui.Printer, e *env.Env, query string) {
+	query = strings.TrimSpace(query)
+	if query != "" {
+		for _, tool := range catalog.All() {
+			if tool.Name == query {
+				renderTool(p, e, tool)
+				return
 			}
 		}
+		p.Warn("no tool named %q", query)
 	}
-	p.Hint("- = unavailable here; availability depends on the environment and the phrase")
+
+	p.Title("tools (closed vocabulary)")
+	for _, tool := range catalog.All() {
+		// Availability here is about the machine, not about the phrase: this
+		// listing describes the catalog, so a tool whose candidate values
+		// happen to be empty for the current request is still a tool.
+		mark := " "
+		if !installed(tool, e) {
+			mark = "."
+		}
+		p.Line("%s %-26s %s", mark, tool.Name, firstSentence(tool.What))
+		if binding, ok := tool.Bind(e); ok {
+			p.Line("    parameters: %s", paramNames(binding.Params))
+		} else {
+			p.Line("    unavailable here: needs %s", strings.Join(tool.Needs, ", "))
+		}
+	}
+	p.Hint("")
+	p.Hint("`jev --tools <name>` for one tool's parameters and its manual page")
+	p.Hint(". = unavailable here; everything listed is read-only")
 }
 
-func commandIDs(cmds []catalog.Command) []string {
-	out := make([]string, 0, len(cmds))
-	for _, c := range cmds {
-		out = append(out, c.ID)
+// installed reports whether a tool's programs are on this machine. It is a
+// weaker question than "usable for this phrase", and it is the right one for
+// documentation.
+func installed(tool catalog.Tool, e *env.Env) bool {
+	for _, need := range tool.Needs {
+		if !e.Has(need) {
+			return false
+		}
+	}
+	_, ok := tool.Bind(e)
+	return ok
+}
+
+func renderTool(p *ui.Printer, e *env.Env, tool catalog.Tool) {
+	p.Title(tool.Name)
+	p.Line("%s", tool.What)
+	if tool.NotFor != "" {
+		p.Line("not for: %s", tool.NotFor)
+	}
+	if len(tool.Examples) > 0 {
+		p.Line("examples: %s", strings.Join(tool.Examples, " | "))
+	}
+
+	binding, ok := tool.Bind(e)
+	if !ok {
+		p.Warn("unavailable here: needs %s", strings.Join(tool.Needs, ", "))
+		return
+	}
+	p.Field("parameters", "")
+	for _, param := range binding.Params {
+		kind := "flag"
+		if param.Kind == catalog.ChoiceParam {
+			kind = "choice"
+		}
+		detail := fmt.Sprintf("[%s] %s", kind, param.Desc)
+		if param.Default != "" {
+			detail += fmt.Sprintf(" (default %s)", param.Default)
+		}
+		if param.Gated {
+			detail += " (asked only if the request mentions it)"
+		}
+		p.Field(param.Name, detail)
+	}
+	// The template, not a command line: the placeholders are shown as they are.
+	p.Field("binds to", strings.Join(binding.Argv, " "))
+	for _, program := range catalog.Programs(binding, e) {
+		p.Field("manual", fmt.Sprintf("man %s   (or %s --help)", program, program))
+	}
+}
+
+func paramNames(params []catalog.Param) string {
+	names := make([]string, 0, len(params))
+	for _, param := range params {
+		names = append(names, param.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+func firstSentence(text string) string {
+	if i := strings.Index(text, ". "); i >= 0 {
+		return text[:i+1]
+	}
+	return text
+}
+
+func toolNames(tools []catalog.Tool) []string {
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, t.Name)
 	}
 	return out
-}
-
-// ---------------------------------------------------------------------------
-// JSON output
-// ---------------------------------------------------------------------------
-
-type jsonOption struct {
-	Key         string  `json:"key"`
-	Probability float64 `json:"probability"`
-	Description string  `json:"description,omitempty"`
-}
-
-type jsonNote struct {
-	Slot   string `json:"slot"`
-	Detail string `json:"detail"`
-}
-
-type jsonDecision struct {
-	Request      string             `json:"request"`
-	Model        string             `json:"model"`
-	Verdict      string             `json:"verdict"`
-	Reason       string             `json:"reason,omitempty"`
-	Command      string             `json:"command,omitempty"`
-	Argv         []string           `json:"argv,omitempty"`
-	CommandLine  string             `json:"command_line,omitempty"`
-	Confidence   float64            `json:"intent_confidence"`
-	Severity     float64            `json:"severity"`
-	Guardrails   map[string]float64 `json:"guardrails,omitempty"`
-	Alternatives []jsonOption       `json:"alternatives,omitempty"`
-	Decisions    []jsonNote         `json:"decisions,omitempty"`
-	Executed     bool               `json:"executed"`
-	ExitCode     *int               `json:"exit_code,omitempty"`
-	Stdout       string             `json:"stdout,omitempty"`
-	Stderr       string             `json:"stderr,omitempty"`
-	Truncated    bool               `json:"output_truncated,omitempty"`
-	Usage        typesafe.Usage     `json:"usage"`
-	LatencyMS    int64              `json:"latency_ms"`
-	Attempts     int                `json:"attempts"`
-}
-
-func emitJSON(p *ui.Printer, plan *resolve.Plan, d *resolve.Decision, res *typesafe.Result, outcome *run.Outcome) {
-	doc := jsonDecision{
-		Request:    plan.Env.Request,
-		Model:      res.Response.Model,
-		Verdict:    string(d.Verdict),
-		Reason:     d.Reason,
-		Confidence: d.Intent.Confidence,
-		Severity:   d.Severity,
-		Guardrails: map[string]float64{
-			"injection":   d.Guardrails["guardrail.injection"].Noul,
-			"destructive": d.Guardrails["guardrail.destructive_request"].Noul,
-			"clarity":     d.Guardrails["guardrail.intent_clear"].Noul,
-		},
-		Usage:     res.Response.Usage,
-		LatencyMS: res.Latency.Milliseconds(),
-		Attempts:  res.Attempts,
-	}
-	if d.Command != nil {
-		doc.Command = d.Command.ID
-		doc.Argv = d.Argv
-		doc.CommandLine = ui.ShellQuote(d.Argv)
-	}
-	for _, alt := range d.Alternatives {
-		doc.Alternatives = append(doc.Alternatives, jsonOption{
-			Key: alt.Key, Probability: alt.Probability, Description: alt.Description,
-		})
-	}
-	for _, note := range d.Notes {
-		doc.Decisions = append(doc.Decisions, jsonNote{Slot: note.Slot, Detail: note.Detail})
-	}
-	if outcome != nil {
-		doc.Executed = outcome.Ran
-		code := outcome.ExitCode
-		doc.ExitCode = &code
-		doc.Stdout = outcome.Stdout
-		doc.Stderr = outcome.Stderr
-		doc.Truncated = outcome.Truncated
-	}
-
-	encoder := json.NewEncoder(p.Out)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(doc); err != nil {
-		p.Error("could not serialize the result: %v", err)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -428,157 +341,44 @@ func emitJSON(p *ui.Printer, plan *resolve.Plan, d *resolve.Decision, res *types
 // ---------------------------------------------------------------------------
 
 type cliOptions struct {
-	dryRun       bool
-	allowWrite   bool
-	json         bool
-	explain      bool
-	noColor      bool
-	help         bool
-	version      bool
-	listCommands bool
-
-	path    string
-	pattern string
-	term    string
-
-	model      string
-	baseURL    string
-	apiKeyFile string
-
-	maxEntries    int
-	minConfidence float64
-	timeoutSecs   int
-
-	// set tracks which numeric flags the user actually passed, so a zero value
-	// never silently overrides the config file.
-	set map[string]bool
+	dryRun  bool
+	tools   bool
+	help    bool
+	version bool
 }
 
 func parseArgs(args []string) (cliOptions, string, error) {
-	opts := cliOptions{set: map[string]bool{}}
+	opts := cliOptions{}
 	var phrase []string
 	afterSeparator := false
 
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if afterSeparator {
+	for _, arg := range args {
+		switch {
+		case afterSeparator:
 			phrase = append(phrase, arg)
-			continue
-		}
-		if arg == "--" {
+		case arg == "--":
 			afterSeparator = true
-			continue
-		}
-		if !strings.HasPrefix(arg, "-") || arg == "-" {
-			phrase = append(phrase, arg)
-			continue
-		}
-
-		name, value, hasValue := arg, "", false
-		if idx := strings.Index(arg, "="); idx > 1 {
-			name, value, hasValue = arg[:idx], arg[idx+1:], true
-		}
-
-		var err error
-		switch name {
-		case "-n", "--dry-run":
+		case arg == "-n" || arg == "--dry-run":
 			opts.dryRun = true
-		case "-x", "--execute":
+		case arg == "-x" || arg == "--execute":
 			// Executing is the default. The flag stays for scripts that want
-			// to say so out loud, and it turns a --dry-run earlier in the
-			// argument list back off.
+			// to say so out loud, and it turns an earlier --dry-run back off.
 			opts.dryRun = false
-		case "--allow-write":
-			opts.allowWrite = true
-		case "-j", "--json":
-			opts.json = true
-		case "-v", "--explain":
-			opts.explain = true
-		case "--no-color":
-			opts.noColor = true
-		case "-h", "--help":
+		case arg == "-h" || arg == "--help":
 			opts.help = true
-		case "-V", "--version":
+		case arg == "-V" || arg == "--version":
 			opts.version = true
-		case "--commands":
-			opts.listCommands = true
-		case "--path":
-			opts.path, err = takeValue(args, &i, name, value, hasValue)
-		case "--pattern":
-			opts.pattern, err = takeValue(args, &i, name, value, hasValue)
-		case "--term":
-			opts.term, err = takeValue(args, &i, name, value, hasValue)
-		case "-m", "--model":
-			opts.model, err = takeValue(args, &i, name, value, hasValue)
-		case "--base-url":
-			opts.baseURL, err = takeValue(args, &i, name, value, hasValue)
-		case "--api-key-file":
-			opts.apiKeyFile, err = takeValue(args, &i, name, value, hasValue)
-		case "--max-entries":
-			var raw string
-			if raw, err = takeValue(args, &i, name, value, hasValue); err == nil {
-				opts.maxEntries, err = strconv.Atoi(raw)
-				opts.set["max-entries"] = true
-			}
-		case "--min-confidence":
-			var raw string
-			if raw, err = takeValue(args, &i, name, value, hasValue); err == nil {
-				opts.minConfidence, err = strconv.ParseFloat(raw, 64)
-				opts.set["min-confidence"] = true
-			}
-		case "--timeout":
-			var raw string
-			if raw, err = takeValue(args, &i, name, value, hasValue); err == nil {
-				opts.timeoutSecs, err = strconv.Atoi(raw)
-				opts.set["timeout"] = true
-			}
+		case arg == "--tools":
+			opts.tools = true
+		case strings.HasPrefix(arg, "-") && arg != "-":
+			return opts, "", fmt.Errorf("unknown option: %s", arg)
 		default:
-			return opts, "", fmt.Errorf("unknown option: %s", name)
-		}
-		if err != nil {
-			return opts, "", err
+			// Words without quotes are joined back into one phrase, so
+			// `jev list the files` works as well as `jev "list the files"`.
+			phrase = append(phrase, arg)
 		}
 	}
 	return opts, strings.Join(phrase, " "), nil
-}
-
-func takeValue(args []string, i *int, name, inline string, hasInline bool) (string, error) {
-	if hasInline {
-		return inline, nil
-	}
-	if *i+1 >= len(args) {
-		return "", fmt.Errorf("option %s needs a value", name)
-	}
-	*i++
-	return args[*i], nil
-}
-
-func applyFlags(cfg *config.Config, opts cliOptions) {
-	if opts.model != "" {
-		cfg.Model = opts.model
-	}
-	if opts.baseURL != "" {
-		cfg.BaseURL = opts.baseURL
-	}
-	if opts.allowWrite {
-		cfg.AllowWrite = true
-	}
-	if opts.noColor {
-		cfg.NoColor = true
-	}
-	if opts.set["max-entries"] {
-		cfg.MaxEntries = opts.maxEntries
-	}
-	if opts.set["min-confidence"] {
-		cfg.MinConfidence = opts.minConfidence
-	}
-	if opts.set["timeout"] {
-		cfg.TimeoutSeconds = opts.timeoutSecs
-	}
-}
-
-func printHelp(w io.Writer) {
-	fmt.Fprint(w, helpText)
 }
 
 var helpText = `jev: turn a phrase in natural language into a shell command.
@@ -594,44 +394,24 @@ running anything.
 EXAMPLES
   jev "list all files in this directory"
   jev --dry-run "how much space does this directory take"
-  jev --path src --pattern '*.go' "find the go files under src"
-  jev --explain "show me the last commits"
-  jev --commands
+  jev "search for TODO in the go files"
+  jev "show the contents of README.md"
 
-EXECUTION
-  (default)                run the resolved command
+OPTIONS
   -n, --dry-run            show the resolved command and stop, running nothing
   -x, --execute            run the resolved command (already the default)
-  --allow-write            allow commands that are not read-only
-  -j, --json               JSON result; the executed command's output is captured
-
-EXPLICIT VALUES
-  --path VALUE             use this path, without asking the model
-  --pattern VALUE          use this file name pattern
-  --term VALUE             use this search text
-
-DIAGNOSTICS
-  -v, --explain            show the request, the raw response, notes and usage
-  --commands               list the closed catalog and what is available here
-  --no-color               no colours
-  -V, --version            version
+  --tools [NAME]           list the tools, or show one tool's parameters and
+                           the manual page to read next
   -h, --help               this help
+  -V, --version            version
 
-TUNING
-  -m, --model NAME         model (default: ` + typesafe.DefaultModel + `)
-  --base-url URL           API host (default: ` + typesafe.DefaultBaseURL + `)
-  --api-key-file FILE      read the API key from a file
-  --max-entries N          maximum directory entries in the state
-  --min-confidence F       minimum confidence to act (default 0.5)
-  --timeout S              API call timeout, in seconds
-
-CONFIG
-  TYPESAFE_API_KEY         TypeSafe API key
-  JEV_MODEL, JEV_BASE_URL, JEV_CONFIG
-  file: ~/.config/jev/config.json
+ENVIRONMENT
+  TYPESAFE_API_KEY         TypeSafe API key (required)
+  JEV_BASE_URL             API host, default ` + typesafe.DefaultBaseURL + `
+  NO_COLOR                 disable colours
 
 EXIT CODES
-  0 success, 1 error, 2 unresolved (ambiguous or outside the catalog)
+  1 error, 2 unresolved (ambiguous or outside the catalog)
   3 blocked by a guardrail, 4 no API key
   the exit code of the executed command is propagated
 `

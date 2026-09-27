@@ -1,11 +1,17 @@
-// Package catalog is the heart of jev-cli: the closed vocabulary of commands
-// the model may choose from.
+// Package catalog is the tool-calling layer at the bottom of jev-cli.
 //
-// The model never writes a command. It answers questions about *which* catalog
-// entry and *which* of a fixed set of options, and this package turns those
-// answers into an argv slice. Because every token that reaches the command
-// line is authored here or confirmed by env, and because we never invoke a
-// shell, there is no path from the model's output to an arbitrary command.
+// A tool is a name, a description and a list of typed parameters. The model
+// fills those parameters: it picks one tool, gives each closed parameter a
+// value, and answers yes or no to each flag. Code then binds the filled call to
+// a command line.
+//
+// Two properties fall out of that shape:
+//
+//   - The model never writes a command. Every token on the command line comes
+//     from a parameter value this repository authored, or from a path env
+//     confirmed exists.
+//   - The shell is an implementation detail of the binding. Nothing above this
+//     file, and nothing the model sees, has to be phrased in terms of flags.
 package catalog
 
 import (
@@ -17,148 +23,148 @@ import (
 	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
 )
 
-// Decision thresholds for turning an answer into a token.
+// Decision thresholds for turning an answer into a parameter value.
 const (
 	// FlagThreshold is the probability above which a yes/no flag question is
 	// read as a yes. The documentation uses 0.5 for noul decisions.
 	FlagThreshold = 0.5
-	// StatedThreshold is the probability above which we accept that the user
-	// said something about an optional argument. Below it we omit the argument
-	// and let the program's own default stand, which is the documented way to
-	// avoid a Choice confidently inventing a value the user never mentioned.
+	// StatedThreshold is the probability above which we accept that the request
+	// said something about a parameter. Below it the declared default stands,
+	// which is the documented way to avoid a question confidently inventing a
+	// value the request never mentioned.
 	StatedThreshold = 0.5
 )
 
-// NoneKey is the escape hatch every selection question carries, so the model
-// can say "none of these" instead of ranking the least-bad option first.
+// NoneKey is the escape hatch every closed parameter carries, so the model can
+// say "none of these" instead of ranking the least bad value first.
 const (
 	NoneKey  = "none_of_these"
 	NoneDesc = "None of these is what the request means."
 )
 
-// Value is one option of a selection question. Key is what the model answers
-// and is deliberately the literal string itself, so nothing has to map a label
-// back to an argument afterwards. Argv is what that option contributes to the
-// command line, possibly nothing, for "no filter" style options.
+// Value is one possible value of a closed parameter. Key is what the model
+// answers and is deliberately the literal string itself, so nothing has to map
+// a label back to an argument afterwards. Argv is how that value binds to the
+// command line, possibly nothing for a "no filter" style value.
 type Value struct {
 	Key  string
 	Desc string
 	Argv []string
 }
 
-// Slot is one decision the model makes about a command: a yes/no flag, or a
-// selection from a closed set of values.
-type Slot struct {
-	// ID names the placeholder in the command template.
-	ID string
-	// QID is the question id sent to the API. Empty means "<command>.<ID>".
-	// Shared slots use a bare, command-independent QID so the question is
-	// asked exactly once even when several commands use it.
+// Kind is how a parameter is filled.
+type Kind int
+
+const (
+	// FlagParam is answered yes or no. Argv holds the tokens a yes contributes.
+	FlagParam Kind = iota
+	// ChoiceParam is answered with one value out of a closed set.
+	ChoiceParam
+)
+
+// Param is one argument of a tool call.
+type Param struct {
+	Kind Kind
+	// Name is the argument name, as a tool call would spell it.
+	Name string
+	// QID overrides the question id, so a parameter shared by several tools is
+	// asked exactly once. Empty means "<tool>.<name>".
 	QID string
-	// Question is the instructions for a selection question, or for a flag
-	// question when TrueArgvByCmd is set.
-	Question string
-	// Yes/No describe what a true and a false mean, for flag questions.
-	Yes string
-	No  string
+	// Desc says what the argument means. It is the basis of the question the
+	// model is asked, so it is written in the tool's terms, not in terms of the
+	// command line.
+	Desc string
 
-	// TrueArgvByCmd holds the tokens a true flag contributes, keyed by command
-	// id; the "*" key applies to every command. A slot is a flag slot when
-	// this map is non-nil.
-	TrueArgvByCmd map[string][]string
-
-	// Options is the closed set for a selection slot. OptionsFor builds it at
-	// runtime from the environment, which is how filesystem-derived choices
-	// get in. A slot is a selection slot when either is set.
-	Options    []Value
-	OptionsFor func(*env.Env) []Value
-
-	// Stated gates a slot behind a "did the user say anything about this?"
-	// question. It applies to flags as well as to selections: it is what
-	// separates "the user wants hidden files" from "the user said nothing".
-	// It adds a "<qid>?" noul question, and Topic describes what that question
-	// is about.
-	Stated bool
-	Topic  string
-	// Default is the option key used when an optional slot is not stated, or
-	// when the answer is the escape hatch.
+	// Argv is the binding for a flag: the tokens a yes contributes.
+	Argv []string
+	// Values is the closed set for a choice. ValuesFor builds it at runtime
+	// from the environment, which is how filesystem-derived values get in.
+	Values    []Value
+	ValuesFor func(*env.Env) []Value
+	// Default is the value used when the request says nothing about this
+	// parameter. The empty string means the parameter has no default and must
+	// be answered.
 	Default string
 
-	// EmptyFallback is used when the chosen option contributes no tokens but
-	// the command still needs an argument (e.g. find needs a path).
-	EmptyFallback []string
+	// Gated asks "did the request say anything about this?" before the
+	// parameter itself is used. It applies to flags and choices alike: it is
+	// what separates "the request wants hidden files" from "the request said
+	// nothing". Without it, a question answered on silence can land just above
+	// the threshold and invent a value.
+	Gated bool
+	// Topic is the subject of the gate question. It defaults to Desc.
+	Topic string
 
-	// Requires names another slot's placeholder. If that slot contributed no
-	// tokens, this one is dropped too, this is how `-name` and its pattern
-	// stay together instead of leaving a dangling flag.
-	Requires string
-
-	// Group makes flags mutually exclusive. Within a group only the highest
-	// probability winner survives, so "sort by time" and "sort by size" can
-	// never both land on the command line.
-	Group string
+	// Question, Yes and No override the generated wording. Leave them empty to
+	// derive the wording from Desc.
+	Question string
+	Yes      string
+	No       string
 }
 
-// IsFlag reports whether the slot is answered by a yes/no question.
-func (s Slot) IsFlag() bool { return s.TrueArgvByCmd != nil }
-
-// QuestionID returns the fully qualified question id for a command.
-func (s Slot) QuestionID(cmdID string) string {
-	if s.QID != "" {
-		return s.QID
+// QuestionID returns the id the API is asked under. The tool name namespaces
+// every parameter except the shared ones, which set QID explicitly.
+func (p Param) QuestionID(tool string) string {
+	if p.QID != "" {
+		return p.QID
 	}
-	return cmdID + "." + s.ID
+	return tool + "." + p.Name
 }
 
-// Placeholder is the template token this slot fills.
-func (s Slot) Placeholder() string { return s.ID }
-
-func (s Slot) trueArgv(cmdID string) []string {
-	if v, ok := s.TrueArgvByCmd[cmdID]; ok {
-		return v
-	}
-	return s.TrueArgvByCmd["*"]
-}
-
-func (s Slot) options(e *env.Env) []Value {
-	var opts []Value
-	if s.OptionsFor != nil {
-		opts = s.OptionsFor(e)
+// values returns the closed set plus the escape hatch, which is always last.
+func (p Param) values(e *env.Env) []Value {
+	var values []Value
+	if p.ValuesFor != nil {
+		values = p.ValuesFor(e)
 	} else {
-		opts = s.Options
+		values = p.Values
 	}
-	// Every selection gets an escape hatch, and it is always last so the
-	// option list reads naturally.
-	for _, o := range opts {
-		if o.Key == NoneKey {
-			return opts
+	for _, v := range values {
+		if v.Key == NoneKey {
+			return values
 		}
 	}
-	return append(opts, Value{Key: NoneKey, Desc: NoneDesc})
+	return append(values, Value{Key: NoneKey, Desc: NoneDesc})
 }
 
-// AsQuestion builds the typed question for this slot.
-func (s Slot) AsQuestion(e *env.Env) typesafe.Question {
-	if s.IsFlag() {
-		return typesafe.Noul(s.Question, &typesafe.NoulCriteria{True: s.Yes, False: s.No})
+// AsQuestion builds the typed question for this parameter.
+func (p Param) AsQuestion(e *env.Env) typesafe.Question {
+	if p.Kind == FlagParam {
+		yes, no := p.Yes, p.No
+		if yes == "" {
+			yes = "The request asks for " + p.Desc + "."
+		}
+		if no == "" {
+			no = "The request asks for the opposite, or says nothing about it."
+		}
+		return typesafe.Noul(p.question(), &typesafe.NoulCriteria{True: yes, False: no})
 	}
 	criteria := map[string]any{}
-	for _, o := range s.options(e) {
-		if o.Desc == "" {
-			criteria[o.Key] = nil
+	for _, v := range p.values(e) {
+		if v.Desc == "" {
+			criteria[v.Key] = nil
 			continue
 		}
-		criteria[o.Key] = o.Desc
+		criteria[v.Key] = v.Desc
 	}
-	return typesafe.Choice(s.Question, criteria)
+	return typesafe.Choice(p.question(), criteria)
 }
 
-// StatedQuestion builds the "did the user say anything about this?" question
-// that keeps optional arguments honest.
-func (s Slot) StatedQuestion() typesafe.Question {
-	topic := s.Topic
+func (p Param) question() string {
+	if p.Question != "" {
+		return p.Question
+	}
+	if p.Kind == FlagParam {
+		return "Does the request ask for " + p.Desc + "?"
+	}
+	return "Which " + p.Name + " should the tool use? The option names are the values used verbatim."
+}
+
+// GateQuestion builds the "did the request say anything about this?" question.
+func (p Param) GateQuestion() typesafe.Question {
+	topic := p.Topic
 	if topic == "" {
-		topic = s.ID
+		topic = p.Desc
 	}
 	return typesafe.Noul(
 		fmt.Sprintf("Does the request say anything about %s?", topic),
@@ -169,50 +175,36 @@ func (s Slot) StatedQuestion() typesafe.Question {
 	)
 }
 
-// Spec is a command resolved for one environment: the argv template plus the
-// slots that fill it. Placeholders are whole tokens of the form "{slot_id}".
-type Spec struct {
-	Argv  []string
-	Slots []Slot
+// Binding is a tool's command line template plus the parameters that fill it.
+// Placeholders are whole tokens of the form "{param_name}".
+type Binding struct {
+	Argv   []string
+	Params []Param
 }
 
-// Validate catches catalog mistakes at test time rather than at 2am: unknown
-// placeholders, duplicate ids, a Requires that points forwards or nowhere.
-func (s Spec) Validate(cmdID string) error {
-	if len(s.Argv) == 0 {
-		return fmt.Errorf("%s: empty argv template", cmdID)
+// Validate catches catalog mistakes at test time rather than in production:
+// unknown placeholders and duplicate parameter names.
+func (b Binding) Validate(tool string) error {
+	if len(b.Argv) == 0 {
+		return fmt.Errorf("%s: empty argv template", tool)
 	}
-	seen := map[string]int{}
-	for i, slot := range s.Slots {
-		if slot.ID == "" {
-			return fmt.Errorf("%s: slot %d has no id", cmdID, i)
+	seen := map[string]bool{}
+	for i, param := range b.Params {
+		if param.Name == "" {
+			return fmt.Errorf("%s: parameter %d has no name", tool, i)
 		}
-		if _, dup := seen[slot.ID]; dup {
-			return fmt.Errorf("%s: duplicate slot id %q", cmdID, slot.ID)
+		if seen[param.Name] {
+			return fmt.Errorf("%s: duplicate parameter %q", tool, param.Name)
 		}
-		seen[slot.ID] = i
+		seen[param.Name] = true
 	}
-	// Requires may point forwards, a flag often depends on a pattern slot
-	// declared after it, so the only thing to check is that the target exists
-	// somewhere in the spec. Assemble resolves it in two passes.
-	for _, slot := range s.Slots {
-		if slot.Requires == "" {
-			continue
-		}
-		if _, found := seen[slot.Requires]; !found {
-			return fmt.Errorf("%s: slot %q requires %q, which does not exist", cmdID, slot.ID, slot.Requires)
-		}
-		if slot.IsFlag() && slot.TrueArgvByCmd[cmdID] == nil && slot.TrueArgvByCmd["*"] == nil {
-			return fmt.Errorf("%s: flag slot %q has no tokens for this command", cmdID, slot.ID)
-		}
-	}
-	for _, tok := range s.Argv {
+	for _, tok := range b.Argv {
 		name, ok := placeholder(tok)
 		if !ok {
 			continue
 		}
-		if _, found := seen[name]; !found {
-			return fmt.Errorf("%s: argv references unknown placeholder {%s}", cmdID, name)
+		if !seen[name] {
+			return fmt.Errorf("%s: argv references unknown parameter {%s}", tool, name)
 		}
 	}
 	return nil
@@ -229,34 +221,34 @@ func placeholder(tok string) (string, bool) {
 	return inner, true
 }
 
-// Command is one entry in the closed vocabulary.
-type Command struct {
-	// ID is the option key the intent question answers with.
-	ID string
-	// What/NotFor/Examples become the contrastive description of this option,
-	// which is what keeps neighbouring commands from being confused.
+// Tool is one entry in the closed vocabulary.
+type Tool struct {
+	// Name is the value the tool-choice question answers with.
+	Name string
+	// What, NotFor and Examples describe the tool to the model. They are what
+	// keeps neighbouring tools from being confused.
 	What     string
 	NotFor   string
 	Examples []string
 
-	// ReadOnly records that the command cannot modify anything. jev-cli
-	// enforces this in code; it is never the model's decision.
+	// ReadOnly records that the tool cannot modify anything. jev-cli enforces
+	// this in code; it is never the model's decision.
 	ReadOnly bool
-	// Needs lists binaries this command cannot run without.
+	// Needs lists binaries the tool cannot run without.
 	Needs []string
 
-	// Build produces the spec for this environment, or ok=false when the
-	// command is unavailable (missing binaries, wrong platform).
-	Build func(*env.Env) (Spec, bool)
+	// Bind produces the command line binding, or ok=false when the tool is
+	// unavailable here (missing binaries, wrong platform).
+	Bind func(*env.Env) (Binding, bool)
 }
 
-// Available returns the commands that can run in this environment and that
-// have a real decision to make here.
-func Available(cmds []Command, e *env.Env) []Command {
-	out := make([]Command, 0, len(cmds))
-	for _, c := range cmds {
+// Available returns the tools that can run here and that have a real decision
+// to make in this environment.
+func Available(tools []Tool, e *env.Env) []Tool {
+	out := make([]Tool, 0, len(tools))
+	for _, t := range tools {
 		ok := true
-		for _, bin := range c.Needs {
+		for _, bin := range t.Needs {
 			if !e.Has(bin) {
 				ok = false
 				break
@@ -265,304 +257,237 @@ func Available(cmds []Command, e *env.Env) []Command {
 		if !ok {
 			continue
 		}
-		spec, ok := c.Build(e)
-		if !ok || !spec.usable(e) {
+		binding, ok := t.Bind(e)
+		if !ok || !binding.usable(e) {
 			continue
 		}
-		out = append(out, c)
+		out = append(out, t)
 	}
 	return out
 }
 
-// Specs resolves every command's spec for this environment.
-func Specs(cmds []Command, e *env.Env) map[string]Spec {
-	out := make(map[string]Spec, len(cmds))
-	for _, c := range cmds {
-		if spec, ok := c.Build(e); ok {
-			out[c.ID] = spec
+// Bindings resolves every tool's binding for this environment.
+func Bindings(tools []Tool, e *env.Env) map[string]Binding {
+	out := make(map[string]Binding, len(tools))
+	for _, t := range tools {
+		if binding, ok := t.Bind(e); ok {
+			out[t.Name] = binding
 		}
 	}
 	return out
 }
 
-// usable reports whether every required selection slot has something real to
-// choose from. A Choice whose only remaining option is the escape hatch would
-// be a 422 from the API and, worse, a question with no answer, so a command
-// that cannot be decided here is simply not offered.
-func (s Spec) usable(e *env.Env) bool {
-	for _, slot := range s.Slots {
-		if slot.IsFlag() {
+// usable reports whether every closed parameter has something real to choose
+// from. A Choice whose only remaining value is the escape hatch would be a 422
+// from the API and, worse, a question with no answer, so a tool that cannot be
+// filled here is simply not offered.
+func (b Binding) usable(e *env.Env) bool {
+	for _, param := range b.Params {
+		if param.Kind == FlagParam {
 			continue
 		}
-		if len(slot.options(e)) < 2 {
+		if len(param.values(e)) < 2 {
 			return false
 		}
 	}
 	return true
 }
 
-// IntentQuestion builds the question that picks the command. Its options are
-// exactly the available command ids, plus an escape hatch, so the answer can
-// be used as a key without any translation.
-func IntentQuestion(cmds []Command) typesafe.Question {
+// ToolQuestion builds the question that picks the tool. Its options are exactly
+// the available tool names, plus an escape hatch, so the answer can be used as
+// a key without any translation.
+func ToolQuestion(tools []Tool) typesafe.Question {
 	criteria := map[string]any{}
-	for _, c := range cmds {
-		desc := map[string]any{"what": c.What}
-		if c.NotFor != "" {
-			desc["not_for"] = c.NotFor
+	for _, t := range tools {
+		desc := map[string]any{"what": t.What}
+		if t.NotFor != "" {
+			desc["not_for"] = t.NotFor
 		}
-		if len(c.Examples) > 0 {
-			desc["examples"] = c.Examples
+		if len(t.Examples) > 0 {
+			desc["examples"] = t.Examples
 		}
-		criteria[c.ID] = desc
+		criteria[t.Name] = desc
 	}
-	criteria[NoneKey] = "The request wants something none of these commands does, including anything that modifies, moves or deletes data, installs software, or reaches the network."
+	criteria[NoneKey] = "The request wants something none of these tools does, including anything that modifies, moves or deletes data, installs software, or reaches the network."
 	return typesafe.Choice(
-		"Which of the available commands should run on this machine to satisfy the request?",
+		"Which of the available tools should be called to satisfy the request?",
 		criteria,
 	)
 }
 
-// Questions builds every slot question for every available command, in one
-// map, deduplicated by question id. Sending them all in a single request is
-// the documented pattern: questions run in parallel, so a speculative question
-// costs tokens but not latency, and the code ignores the ones whose command
-// did not win.
-func Questions(cmds []Command, specs map[string]Spec, e *env.Env) map[string]typesafe.Question {
+// Questions builds every parameter question for every available tool, in one
+// map, deduplicated by question id. Sending them all in a single request is the
+// documented pattern: questions run in parallel, so a speculative question
+// costs tokens but not latency, and the code ignores the ones whose tool did
+// not win.
+func Questions(tools []Tool, bindings map[string]Binding, e *env.Env) map[string]typesafe.Question {
 	out := map[string]typesafe.Question{}
-	for _, c := range cmds {
-		spec, ok := specs[c.ID]
+	for _, t := range tools {
+		binding, ok := bindings[t.Name]
 		if !ok {
 			continue
 		}
-		for _, slot := range spec.Slots {
-			qid := slot.QuestionID(c.ID)
+		for _, param := range binding.Params {
+			qid := param.QuestionID(t.Name)
 			if _, seen := out[qid]; seen {
 				continue
 			}
-			out[qid] = slot.AsQuestion(e)
-			if slot.Stated {
-				out[qid+"?"] = slot.StatedQuestion()
+			out[qid] = param.AsQuestion(e)
+			if param.Gated {
+				out[qid+"?"] = param.GateQuestion()
 			}
 		}
 	}
 	return out
 }
 
-// Note records one decision the assembler made, so the CLI can explain itself.
+// Note records one parameter decision, so the CLI can explain itself.
 type Note struct {
 	Question string
-	Slot     string
+	Param    string
 	Detail   string
 	Answer   typesafe.Answer
 	Answered bool
 }
 
-// Assembled is the outcome of turning answers into a command line.
-type Assembled struct {
-	Argv  []string
-	Notes []Note
-	// Missing lists required slots that did not resolve. When it is non-empty
-	// there is no usable command.
-	Missing []string
+// Call is the typed result of the layer: which tool, with which arguments.
+// The command line is one binding of it, not the thing itself.
+type Call struct {
+	Tool string
+	// Args maps a parameter name to its value: a bool for a flag, the chosen
+	// key for a closed parameter.
+	Args map[string]any
 }
 
-type evaluated struct {
-	slot       Slot
-	qid        string
-	tokens     []string
-	answer     typesafe.Answer
-	answered   bool
-	weight     float64
-	suppressed string
-	// resolved records that the slot got a real answer. It is deliberately
-	// not the same as "produced tokens": `no_path_filter` is a legitimate
-	// answer that contributes nothing, while the escape hatch is not an
-	// answer at all.
+// Result is the outcome of filling one tool call.
+type Result struct {
+	Call     Call
+	Argv     []string
+	Notes    []Note
+	Unfilled []string
+}
+
+type filled struct {
+	param    Param
+	qid      string
+	tokens   []string
+	value    any
+	answer   typesafe.Answer
+	answered bool
+	weight   float64
+	// resolved records that the parameter got a real value. It is deliberately
+	// not the same as "produced tokens": a value may legitimately mean "no
+	// filter" and contribute nothing, while the escape hatch is not a value at
+	// all.
 	resolved bool
-	// unstated records that the user said nothing about this slot, so the
-	// note can say so instead of pretending the model decided.
+	// unstated records that the request said nothing about this parameter, so
+	// the note can say so instead of pretending the model decided.
 	unstated bool
 }
 
-// Assemble reads only the answers belonging to the winning command and expands
-// the template. Every token comes from a Value that this repository authored,
-// or from a path that env confirmed exists.
-func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env.Env, forced map[string]string) (Assembled, error) {
-	if err := spec.Validate(cmd.ID); err != nil {
-		return Assembled{}, err
+// Fill reads only the answers belonging to the chosen tool and binds them to a
+// command line. Every token comes from a value this repository authored, or
+// from a path env confirmed exists.
+func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, e *env.Env) (Result, error) {
+	if err := binding.Validate(tool.Name); err != nil {
+		return Result{}, err
 	}
 
-	evaluatedSlots := make([]evaluated, 0, len(spec.Slots))
-	produced := map[string]bool{}
+	call := Call{Tool: tool.Name, Args: map[string]any{}}
+	filledParams := make([]filled, 0, len(binding.Params))
 
-	for _, slot := range spec.Slots {
-		qid := slot.QuestionID(cmd.ID)
-		ev := evaluated{slot: slot, qid: qid}
-
-		// A literal supplied by the human on the command line replaces the
-		// model's decision for this slot entirely. The model was never asked,
-		// so there is no answer to find, and the option could not have been in
-		// the closed set anyway.
-		if literal, isForced := forced[slot.ID]; isForced && !slot.IsFlag() {
-			ev.tokens = []string{literal}
-			ev.resolved = true
-			ev.answer = typesafe.Answer{Type: typesafe.KindChoice, Choice: literal, Confidence: 1}
-			ev.answered = true
-			ev.weight = 1
-			evaluatedSlots = append(evaluatedSlots, ev)
-			continue
-		}
+	for _, param := range binding.Params {
+		qid := param.QuestionID(tool.Name)
+		f := filled{param: param, qid: qid}
 
 		answer, ok := answers[qid]
-		if !ok {
-			// A required slot with no answer is a hole we cannot paper over.
-			if !slot.Stated {
-				return Assembled{}, fmt.Errorf("catalog: no answer for %q", qid)
-			}
+		if !ok && !param.Gated && param.Kind != FlagParam {
+			// A required parameter with no answer is a hole we cannot paper
+			// over.
+			return Result{}, fmt.Errorf("catalog: no answer for %q", qid)
 		}
-		ev.answer = answer
-		ev.answered = ok
+		f.answer = answer
+		f.answered = ok
 
-		// The "did the user say anything about this?" gate comes first, for
-		// flags and selections alike. Without it, a flag question answered on
-		// silence lands just above the threshold and adds a flag nobody asked
-		// for (the real model answers 0.52 for "list all files in this
-		// directory", enough to add -a). With it, silence means the declared
-		// default stands and the flag is left off.
-		if slot.Stated {
-			statedQID := qid + "?"
-			stated, ok := answers[statedQID]
+		// The gate comes first, for flags and choices alike.
+		if param.Gated {
+			gate, ok := answers[qid+"?"]
 			if !ok {
-				return Assembled{}, fmt.Errorf("catalog: no answer for %q", statedQID)
+				return Result{}, fmt.Errorf("catalog: no answer for %q", qid+"?")
 			}
-			if stated.Noul < StatedThreshold {
-				ev.weight = stated.Noul
-				ev.unstated = true
-				ev.resolved = true
-				if !slot.IsFlag() {
-					if val, found := findValue(slot.options(e), slot.Default); found {
-						ev.tokens = val.Argv
+			if gate.Noul < StatedThreshold {
+				f.weight = gate.Noul
+				f.unstated = true
+				f.resolved = true
+				if param.Kind == FlagParam {
+					f.value = false
+				} else {
+					if v, found := findValue(param.values(e), param.Default); found {
+						f.tokens = v.Argv
+						f.value = v.Key
 					}
 				}
-				evaluatedSlots = append(evaluatedSlots, ev)
+				filledParams = append(filledParams, f)
 				continue
 			}
 		}
 
-		switch {
-		case slot.IsFlag():
+		switch param.Kind {
+		case FlagParam:
 			if !ok {
-				return Assembled{}, fmt.Errorf("catalog: no answer for flag %q", qid)
+				return Result{}, fmt.Errorf("catalog: no answer for flag %q", qid)
 			}
-			ev.resolved = true
-			ev.weight = answer.Noul
+			f.resolved = true
+			f.weight = answer.Noul
 			if answer.Noul >= FlagThreshold {
-				ev.tokens = slot.trueArgv(cmd.ID)
+				f.tokens = param.Argv
+				f.value = true
+			} else {
+				f.value = false
 			}
 
-		case slot.Stated:
-			ev.weight = answer.Confidence
-			val, found := findValue(slot.options(e), answer.Choice)
-			if !found {
-				return Assembled{}, unknownOption(qid, answer.Choice)
-			}
-			if val.Key == NoneKey {
-				ev.tokens = nil
-				break
-			}
-			ev.resolved = true
-			ev.tokens = val.Argv
-
-		default:
+		case ChoiceParam:
 			if !ok {
-				return Assembled{}, fmt.Errorf("catalog: no answer for %q", qid)
+				return Result{}, fmt.Errorf("catalog: no answer for %q", qid)
 			}
-			ev.weight = answer.Confidence
-			val, found := findValue(slot.options(e), answer.Choice)
+			f.weight = answer.Confidence
+			v, found := findValue(param.values(e), answer.Choice)
 			if !found {
-				return Assembled{}, unknownOption(qid, answer.Choice)
+				return Result{}, unknownValue(qid, answer.Choice)
 			}
-			if val.Key == NoneKey {
-				ev.tokens = nil
-				break
+			if v.Key != NoneKey {
+				f.resolved = true
+				f.tokens = v.Argv
+				f.value = v.Key
 			}
-			ev.resolved = true
-			ev.tokens = val.Argv
 		}
 
-		evaluatedSlots = append(evaluatedSlots, ev)
+		filledParams = append(filledParams, f)
 	}
 
-	// Resolve flag groups: within a group, only the strongest winner keeps its
-	// tokens. This is what stops `ls -t -S` from ever being built.
-	for i := range evaluatedSlots {
-		g := evaluatedSlots[i].slot.Group
-		if g == "" || len(evaluatedSlots[i].tokens) == 0 {
+	var unfilled []string
+	notes := make([]Note, 0, len(filledParams))
+	tokensFor := make(map[string][]string, len(filledParams))
+	for _, f := range filledParams {
+		tokensFor[f.param.Name] = f.tokens
+		notes = append(notes, Note{
+			Question: f.qid,
+			Param:    f.param.Name,
+			Answer:   f.answer,
+			Answered: f.answered,
+			Detail:   describe(f),
+		})
+		if !f.resolved {
+			unfilled = append(unfilled, f.param.Name)
 			continue
 		}
-		for j := range evaluatedSlots {
-			if i == j || evaluatedSlots[j].slot.Group != g || len(evaluatedSlots[j].tokens) == 0 {
-				continue
-			}
-			winner, loser := i, j
-			if evaluatedSlots[j].weight > evaluatedSlots[i].weight {
-				winner, loser = j, i
-			}
-			evaluatedSlots[loser].tokens = nil
-			evaluatedSlots[loser].suppressed = evaluatedSlots[winner].slot.ID
-			if loser == i {
-				break
-			}
-		}
+		call.Args[f.param.Name] = f.value
 	}
 
-	// Two passes, because Requires points forwards as often as backwards: a
-	// flag may depend on a pattern slot declared after it. Pass one decides
-	// what each placeholder contributes on its own; pass two drops the slots
-	// whose dependency contributed nothing.
-	for i := range evaluatedSlots {
-		ev := &evaluatedSlots[i]
-		if ev.resolved && len(ev.tokens) == 0 && len(ev.slot.EmptyFallback) > 0 && ev.slot.Requires == "" {
-			ev.tokens = ev.slot.EmptyFallback
-		}
-		produced[ev.slot.Placeholder()] = len(ev.tokens) > 0
-	}
-	for i := range evaluatedSlots {
-		ev := &evaluatedSlots[i]
-		if ev.slot.Requires == "" {
-			continue
-		}
-		if !produced[ev.slot.Requires] {
-			ev.tokens = nil
-		}
-		produced[ev.slot.Placeholder()] = len(ev.tokens) > 0
-	}
-
-	var missing []string
-	notes := make([]Note, 0, len(evaluatedSlots))
-	for _, ev := range evaluatedSlots {
-		note := Note{
-			Question: ev.qid,
-			Slot:     ev.slot.ID,
-			Answer:   ev.answer,
-			Answered: ev.answered,
-			Detail:   describe(ev),
-		}
-		notes = append(notes, note)
-		if !ev.resolved && !ev.slot.IsFlag() {
-			missing = append(missing, ev.slot.ID)
-		}
-	}
-
-	// Expand the template: a placeholder contributes zero or more whole
-	// tokens, a literal contributes itself.
-	argv := make([]string, 0, len(spec.Argv)+4)
-	tokensFor := map[string][]string{}
-	for _, ev := range evaluatedSlots {
-		tokensFor[ev.slot.Placeholder()] = ev.tokens
-	}
-	for _, tok := range spec.Argv {
+	// Bind: a placeholder contributes zero or more whole tokens, a literal
+	// contributes itself.
+	argv := make([]string, 0, len(binding.Argv)+4)
+	for _, tok := range binding.Argv {
 		name, isPlaceholder := placeholder(tok)
 		if !isPlaceholder {
 			if tok != "" {
@@ -575,101 +500,106 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 				continue
 			}
 			if strings.ContainsRune(t, 0) {
-				return Assembled{}, fmt.Errorf("catalog: refusing token with NUL byte from {%s}", name)
+				return Result{}, fmt.Errorf("catalog: refusing token with NUL byte from {%s}", name)
 			}
 			argv = append(argv, t)
 		}
 	}
 
-	return Assembled{Argv: argv, Notes: notes, Missing: missing}, nil
+	return Result{Call: call, Argv: argv, Notes: notes, Unfilled: unfilled}, nil
 }
 
-func describe(ev evaluated) string {
+func describe(f filled) string {
 	switch {
-	case ev.suppressed != "":
-		return fmt.Sprintf("omitted: conflicts with %s", ev.suppressed)
-	case ev.unstated && ev.slot.IsFlag():
-		if len(ev.tokens) > 0 {
-			return fmt.Sprintf("included: default (not mentioned, p=%.2f)", ev.weight)
+	case f.unstated && f.param.Kind == FlagParam:
+		return fmt.Sprintf("omitted: not mentioned (p=%.2f)", f.weight)
+	case f.unstated:
+		if len(f.tokens) == 0 {
+			return fmt.Sprintf("omitted: not mentioned (p=%.2f)", f.weight)
 		}
-		return fmt.Sprintf("omitted: not mentioned (p=%.2f)", ev.weight)
-	case ev.unstated:
-		if len(ev.tokens) == 0 {
-			return fmt.Sprintf("omitted: not mentioned (p=%.2f)", ev.weight)
+		return fmt.Sprintf("default %s: not mentioned (p=%.2f)", strings.Join(f.tokens, " "), f.weight)
+	case f.param.Kind == FlagParam:
+		if len(f.tokens) > 0 {
+			return fmt.Sprintf("included (p=%.2f)", f.answer.Noul)
 		}
-		return fmt.Sprintf("default %s: not mentioned (p=%.2f)", strings.Join(ev.tokens, " "), ev.weight)
-	case ev.slot.IsFlag():
-		if len(ev.tokens) > 0 {
-			return fmt.Sprintf("included (p=%.2f)", ev.answer.Noul)
-		}
-		return fmt.Sprintf("omitted (p=%.2f)", ev.answer.Noul)
-	case len(ev.tokens) == 0:
-		if ev.answer.Choice == NoneKey {
-			return "unresolved: none of the options fits"
+		return fmt.Sprintf("omitted (p=%.2f)", f.answer.Noul)
+	case len(f.tokens) == 0:
+		if f.answer.Choice == NoneKey {
+			return "unfilled: none of the values fits"
 		}
 		return "no value"
 	default:
-		return fmt.Sprintf("%s (confidence %.2f)", strings.Join(ev.tokens, " "), ev.answer.Confidence)
+		return fmt.Sprintf("%s (confidence %.2f)", strings.Join(f.tokens, " "), f.answer.Confidence)
 	}
 }
 
-// Allowlist returns every program name that any available spec can place in
+// Programs returns the program names a binding can place in argv[0].
+//
+// Only argv[0] matters for execution permission, so this is exact rather than
+// generous. When the template's first token is a placeholder, the programs are
+// the first tokens of that parameter's values, and nothing else in the binding
+// is a candidate for the program position.
+func Programs(binding Binding, e *env.Env) []string {
+	var out []string
+	if len(binding.Argv) == 0 {
+		return out
+	}
+	name, isPlaceholder := placeholder(binding.Argv[0])
+	if !isPlaceholder {
+		if isProgramToken(binding.Argv[0]) {
+			return []string{binding.Argv[0]}
+		}
+		return out
+	}
+	for _, param := range binding.Params {
+		if param.Name != name {
+			continue
+		}
+		for _, v := range param.values(e) {
+			if len(v.Argv) > 0 && isProgramToken(v.Argv[0]) {
+				out = append(out, v.Argv[0])
+			}
+		}
+	}
+	return out
+}
+
+func isProgramToken(tok string) bool {
+	return tok != "" && !strings.HasPrefix(tok, "-") && !strings.ContainsRune(tok, 0)
+}
+
+// Allowlist returns every program name that any available binding can place in
 // argv[0]. It is the last line of defence: even a bug in this catalog cannot
 // make jev-cli exec a program that is not on this list.
-func Allowlist(specs map[string]Spec, e *env.Env) []string {
+func Allowlist(bindings map[string]Binding, e *env.Env) []string {
 	set := map[string]bool{}
-	add := func(tok string) {
-		if tok == "" || strings.HasPrefix(tok, "-") || strings.ContainsRune(tok, 0) {
-			return
-		}
-		set[tok] = true
-	}
-	for _, spec := range specs {
-		if len(spec.Argv) > 0 {
-			if _, isPlaceholder := placeholder(spec.Argv[0]); !isPlaceholder {
-				add(spec.Argv[0])
-			}
-		}
-		for _, slot := range spec.Slots {
-			for _, v := range slot.options(e) {
-				if len(v.Argv) > 0 {
-					add(v.Argv[0])
-				}
-			}
+	for _, binding := range bindings {
+		for _, program := range Programs(binding, e) {
+			set[program] = true
 		}
 	}
 	out := make([]string, 0, len(set))
-	for name := range set {
-		out = append(out, name)
+	for program := range set {
+		out = append(out, program)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// findValue looks up an option in a list. A nil env is fine: the answer keys
-// are all we need here, and the descriptions are not used.
-func findValue(opts []Value, key string) (Value, bool) {
-	for _, o := range opts {
-		if o.Key == key {
-			return o, true
+// unknownValue is the loud failure for an answer the API should never have
+// produced. Papering over it with a default would hide a contract violation,
+// which is exactly the kind of silent wrongness this design exists to avoid.
+func unknownValue(qid, key string) error {
+	return fmt.Errorf("catalog: %q answered with %q, which is not one of its values", qid, key)
+}
+
+// findValue looks up a value in a list. The env may be nil: the keys are all we
+// need here, and the descriptions are not used.
+func findValue(values []Value, key string) (Value, bool) {
+	for _, v := range values {
+		if v.Key == key {
+			return v, true
 		}
 	}
 	return Value{}, false
-}
-
-// unknownOption is the loud failure for an answer the API should never have
-// produced. Papering over it with a default would hide a contract violation,
-// which is exactly the kind of silent wrongness this design exists to avoid.
-func unknownOption(qid, key string) error {
-	return fmt.Errorf("catalog: %q answered with %q, which is not one of its options", qid, key)
-}
-
-// Statuses is a stable ordering of note slots, for display.
-func (a Assembled) Statuses() []string {
-	out := make([]string, 0, len(a.Notes))
-	for _, n := range a.Notes {
-		out = append(out, n.Slot)
-	}
-	sort.Strings(out)
-	return out
 }

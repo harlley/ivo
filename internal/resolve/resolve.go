@@ -46,84 +46,54 @@ const (
 	noneActionThreshold = 0.4
 )
 
-// Options configures Build.
-type Options struct {
-	Model string
-	// Forced maps a slot id to a literal value supplied by the human on the
-	// command line, replacing the model's decision for that slot.
-	Forced map[string]string
-}
-
 // Plan is everything needed to ask, plus everything needed to interpret the
 // answer afterwards.
 type Plan struct {
 	Env      *env.Env
-	Commands []catalog.Command
-	Specs    map[string]catalog.Spec
+	Tools    []catalog.Tool
+	Bindings map[string]catalog.Binding
 	Request  typesafe.SystemOneRequest
 	// Labels maps a question id to option key -> human description, so the
 	// CLI can explain a low-confidence answer.
 	Labels map[string]map[string]string
-	Forced map[string]string
 }
 
 // Build probes nothing (env is already probed) and assembles the request.
-func Build(e *env.Env, opts Options) (*Plan, error) {
-	commands := catalog.Available(catalog.All(), e)
-	if len(commands) == 0 {
-		return nil, fmt.Errorf("no catalog command is available in this environment")
+func Build(e *env.Env) (*Plan, error) {
+	tools := catalog.Available(catalog.All(), e)
+	if len(tools) == 0 {
+		return nil, fmt.Errorf("no tool is available in this environment")
 	}
-	specs := catalog.Specs(commands, e)
+	bindings := catalog.Bindings(tools, e)
 
+	// The catalog owns the question set. The plan and the filler therefore
+	// cannot disagree about which questions have to be answered, which is a bug
+	// that has happened once already.
 	questions := map[string]any{}
 	labels := map[string]map[string]string{}
 
-	intent := catalog.IntentQuestion(commands)
-	questions["intent"] = intent
-	labels["intent"] = criteriaLabels(intent)
+	choice := catalog.ToolQuestion(tools)
+	questions["intent"] = choice
+	labels["intent"] = criteriaLabels(choice)
 
-	for _, cmd := range commands {
-		spec, ok := specs[cmd.ID]
-		if !ok {
-			continue
-		}
-		for _, slot := range spec.Slots {
-			if _, isForced := opts.Forced[slot.ID]; isForced && !slot.IsFlag() {
-				// The human already supplied this literal; there is nothing to
-				// decide, and the option could not have been in the closed set.
-				continue
-			}
-			qid := slot.QuestionID(cmd.ID)
-			if _, seen := questions[qid]; seen {
-				continue
-			}
-			question := slot.AsQuestion(e)
-			questions[qid] = question
-			labels[qid] = criteriaLabels(question)
-			if slot.Stated {
-				questions[qid+"?"] = slot.StatedQuestion()
-			}
-		}
+	for qid, question := range catalog.Questions(tools, bindings, e) {
+		questions[qid] = question
+		labels[qid] = criteriaLabels(question)
 	}
 	for qid, question := range catalog.GuardrailQuestions() {
 		questions[qid] = question
 	}
 
-	model := opts.Model
-	if model == "" {
-		model = typesafe.DefaultModel
-	}
-	req := typesafe.SystemOneRequest{State: buildState(e), Model: model, Questions: questions}
+	req := typesafe.SystemOneRequest{State: buildState(e), Model: typesafe.DefaultModel, Questions: questions}
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
 	return &Plan{
 		Env:      e,
-		Commands: commands,
-		Specs:    specs,
+		Tools:    tools,
+		Bindings: bindings,
 		Request:  req,
 		Labels:   labels,
-		Forced:   opts.Forced,
 	}, nil
 }
 
@@ -140,16 +110,6 @@ func buildState(e *env.Env) map[string]any {
 		directory["error"] = e.EntriesError
 	}
 
-	git := map[string]any{"is_repository": false}
-	if e.Git.IsRepo {
-		git = map[string]any{
-			"is_repository":           true,
-			"root":                    e.Git.Root,
-			"branch":                  e.Git.Branch,
-			"has_uncommitted_changes": e.Git.Dirty,
-		}
-	}
-
 	return map[string]any{
 		"request": e.Request,
 		"environment": map[string]any{
@@ -158,7 +118,6 @@ func buildState(e *env.Env) map[string]any {
 			"shell": e.Shell,
 		},
 		"directory": directory,
-		"git":       git,
 		"named_in_request": map[string]any{
 			"paths":    nonNil(e.Candidates.Paths),
 			"patterns": nonNil(e.Candidates.Patterns),
@@ -198,10 +157,10 @@ type Decision struct {
 	Verdict Verdict
 	Reason  string
 
-	Command *catalog.Command
-	Argv    []string
-	Notes   []catalog.Note
-	Missing []string
+	Tool     *catalog.Tool
+	Argv     []string
+	Notes    []catalog.Note
+	Unfilled []string
 
 	Intent       typesafe.Answer
 	Alternatives []typesafe.RankedOption
@@ -257,7 +216,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	for _, qid := range []string{
 		"guardrail.injection",
 		"guardrail.destructive_request",
-		"guardrail.intent_clear",
+		"guardrail.tool_is_clear",
 		"guardrail.severity",
 	} {
 		if answer, ok := res.Answers[qid]; ok {
@@ -272,7 +231,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	if injection := d.Guardrails["guardrail.injection"].Noul; injection >= opts.InjectionThreshold {
 		d.Verdict = VerdictBlocked
 		d.Reason = fmt.Sprintf(
-			"the request looks like an attempt to leave the fixed set of commands (p=%.2f, threshold %.2f)",
+			"the request looks like an attempt to leave the fixed set of tools (p=%.2f, threshold %.2f)",
 			injection, opts.InjectionThreshold)
 		return d, nil
 	}
@@ -282,7 +241,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	if destructive := d.Guardrails["guardrail.destructive_request"].Noul; destructive >= opts.DestructiveThreshold {
 		d.Verdict = VerdictUnsupported
 		d.Reason = fmt.Sprintf(
-			"the request involves changing data or the system (p=%.2f), and this CLI only runs read-only commands",
+			"the request involves changing data or the system (p=%.2f), and this CLI only runs read-only tools",
 			destructive)
 		return d, nil
 	}
@@ -297,20 +256,20 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	//
 	//    A gate below this line does not end the work: the command is still
 	//    resolved so the CLI can show the user its best reading of the phrase.
-	//    Seeing "eu ia rodar git diff -- ." is what makes an ask actionable
+	//    Seeing the command it would have run is what makes an ask actionable
 	//    instead of a dead end. That suggestion is display-only, every caller
 	//    executes on VerdictAct and nothing else.
 	noneProbability := intent.Probability(catalog.NoneKey)
 	switch {
 	case intent.Choice == catalog.NoneKey || noneProbability >= noneActionThreshold:
 		d.Verdict = VerdictUnsupported
-		d.Reason = fmt.Sprintf("no catalog command matches the request (p=%.2f for \"none of these\")", noneProbability)
+		d.Reason = fmt.Sprintf("no tool in the catalog matches the request (p=%.2f for \"none of these\")", noneProbability)
 	case intent.Confidence < opts.MinConfidence:
 		d.Verdict = VerdictAsk
-		d.Reason = fmt.Sprintf("not sure which command to use (confidence %.2f, minimum %.2f)",
+		d.Reason = fmt.Sprintf("not sure which tool to call (confidence %.2f, minimum %.2f)",
 			intent.Confidence, opts.MinConfidence)
 	default:
-		if clarity := d.Guardrails["guardrail.intent_clear"].Noul; clarity < opts.ClarityThreshold {
+		if clarity := d.Guardrails["guardrail.tool_is_clear"].Noul; clarity < opts.ClarityThreshold {
 			d.Verdict = VerdictAsk
 			d.Reason = fmt.Sprintf("the request is too ambiguous to run without confirmation (clarity p=%.2f)", clarity)
 		} else {
@@ -318,63 +277,65 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 		}
 	}
 
-	cmd, found := p.command(intent.Choice)
+	tool, found := p.tool(intent.Choice)
 	if !found {
 		if d.Verdict == VerdictAct {
 			return nil, fmt.Errorf("the model chose %q, which is not in the catalog", intent.Choice)
 		}
-		// The escape hatch won, so there is no command to offer.
+		// The escape hatch won, so there is no tool to offer.
 		return d, nil
 	}
-	if !cmd.ReadOnly && !opts.AllowWrite {
+	if !tool.ReadOnly && !opts.AllowWrite {
 		d.Verdict = VerdictBlocked
-		d.Reason = "this command is not read-only; use --allow-write to permit it"
+		d.Reason = "this tool is not read-only; use --allow-write to permit it"
 		return d, nil
 	}
 
-	assembled, err := catalog.Assemble(*cmd, p.Specs[cmd.ID], res.Answers, p.Env, p.Forced)
+	filled, err := catalog.Fill(*tool, p.Bindings[tool.Name], res.Answers, p.Env)
 	if err != nil {
 		if d.Verdict == VerdictAct {
 			return nil, err
 		}
-		// We were only going to show a suggestion; failing to build one is
-		// not worth failing the whole command over.
+		// We were only going to show a suggestion; failing to build one is not
+		// worth failing the whole call over.
 		return d, nil
 	}
-	d.Command = cmd
-	d.Notes = assembled.Notes
-	d.Missing = assembled.Missing
+	d.Tool = tool
+	d.Notes = filled.Notes
+	d.Unfilled = filled.Unfilled
 
 	if d.Verdict != VerdictAct {
-		// Never hand over a half-resolved command, even as a suggestion.
-		if len(assembled.Missing) == 0 {
-			d.Argv = assembled.Argv
+		// Only an ask shows a suggestion. An unsupported verdict means the
+		// request is outside the catalog, and offering an adjacent tool there
+		// would be misleading. A half-filled call is never handed over either
+		// way.
+		if d.Verdict == VerdictAsk && len(filled.Unfilled) == 0 {
+			d.Argv = filled.Argv
 		}
 		return d, nil
 	}
 
-	if len(assembled.Missing) > 0 {
+	if len(filled.Unfilled) > 0 {
 		d.Verdict = VerdictAsk
-		// A half-resolved command is not a command: dropping the argv makes it
+		// A half-filled call is not a call: dropping the argv makes it
 		// impossible for any later code path to run it by accident.
 		d.Argv = nil
-		d.Reason = "could not determine: " + strings.Join(assembled.Missing, ", ") +
-			" (give the value explicitly, for example with --path)"
+		d.Reason = "could not fill: " + strings.Join(filled.Unfilled, ", ") + " (rephrase the request with the value spelled out)"
 		return d, nil
 	}
-	if len(assembled.Argv) == 0 {
-		return nil, fmt.Errorf("the resolved command is empty")
+	if len(filled.Argv) == 0 {
+		return nil, fmt.Errorf("the resolved call bound to an empty command")
 	}
 
-	d.Argv = assembled.Argv
+	d.Argv = filled.Argv
 	d.Verdict = VerdictAct
 	return d, nil
 }
 
-func (p *Plan) command(id string) (*catalog.Command, bool) {
-	for i := range p.Commands {
-		if p.Commands[i].ID == id {
-			return &p.Commands[i], true
+func (p *Plan) tool(name string) (*catalog.Tool, bool) {
+	for i := range p.Tools {
+		if p.Tools[i].Name == name {
+			return &p.Tools[i], true
 		}
 	}
 	return nil, false

@@ -11,7 +11,7 @@ import (
 )
 
 // testEnv is a hand-built environment: no filesystem, no processes, so the
-// catalog can be tested exactly.
+// layer can be tested exactly.
 func testEnv() *env.Env {
 	bins := map[string]bool{}
 	for _, b := range catalog.Binaries() {
@@ -20,7 +20,7 @@ func testEnv() *env.Env {
 	return &env.Env{
 		Request: "list all files in this directory",
 		OS:      "darwin",
-		CWD:     "/tmp/projeto",
+		CWD:     "/tmp/project",
 		Home:    "/Users/test",
 		Shell:   "/bin/zsh",
 		Bins:    bins,
@@ -30,7 +30,6 @@ func testEnv() *env.Env {
 			{Name: "README.md"},
 		},
 		EntryCount: 3,
-		Git:        env.Git{IsRepo: true, Root: "/tmp/projeto", Branch: "main"},
 		Candidates: env.Candidates{
 			Patterns: []string{"*.go"},
 			Terms:    []string{"TODO"},
@@ -38,71 +37,95 @@ func testEnv() *env.Env {
 	}
 }
 
-func TestEveryEntryBuildsAValidSpec(t *testing.T) {
+func TestEveryToolBindsAndValidates(t *testing.T) {
 	e := testEnv()
 	all := catalog.All()
 	available := catalog.Available(all, e)
 	if len(available) != len(all) {
-		t.Fatalf("available = %d, want all %d entries in a fully equipped environment", len(available), len(all))
+		t.Fatalf("available = %d, want all %d tools in a fully equipped environment", len(available), len(all))
 	}
-	specs := catalog.Specs(all, e)
-	for _, cmd := range all {
-		spec, ok := specs[cmd.ID]
+	bindings := catalog.Bindings(all, e)
+	for _, tool := range all {
+		binding, ok := bindings[tool.Name]
 		if !ok {
-			t.Errorf("%s: no spec", cmd.ID)
+			t.Errorf("%s: no binding", tool.Name)
 			continue
 		}
-		if err := spec.Validate(cmd.ID); err != nil {
-			t.Errorf("%s: %v", cmd.ID, err)
+		if err := binding.Validate(tool.Name); err != nil {
+			t.Errorf("%s: %v", tool.Name, err)
 		}
-		if !cmd.ReadOnly {
-			t.Errorf("%s: v1 must be read-only", cmd.ID)
+		if !tool.ReadOnly {
+			t.Errorf("%s: every tool must be read-only", tool.Name)
 		}
-		if cmd.What == "" {
-			t.Errorf("%s: missing the contrastive description of the option", cmd.ID)
+		if tool.What == "" {
+			t.Errorf("%s: missing the description the model chooses by", tool.Name)
 		}
+		for _, param := range binding.Params {
+			if param.Desc == "" {
+				t.Errorf("%s.%s: a parameter needs a description to build its question from", tool.Name, param.Name)
+			}
+		}
+	}
+	if len(all) != 5 {
+		t.Errorf("the catalog has %d tools; this version is meant to stay small", len(all))
+	}
+	// read_manual is the layer documenting itself, so it must be able to talk
+	// about the programs the other tools use.
+	if _, ok := bindings["read_manual"]; !ok {
+		t.Error("read_manual has no binding")
 	}
 }
 
-func TestUnavailableCommandsAreDropped(t *testing.T) {
+func TestUnavailableToolsAreDropped(t *testing.T) {
 	e := testEnv()
-	e.Bins["git"] = false
-	e.Git = env.Git{}
-	for _, cmd := range catalog.Available(catalog.All(), e) {
-		if strings.HasPrefix(cmd.ID, "git_") {
-			t.Errorf("%s should be unavailable outside a repository", cmd.ID)
+	// search_text binds to ripgrep or to grep, so it only disappears when both
+	// are missing.
+	e.Bins["rg"] = false
+	if len(catalog.Available(catalog.All(), e)) != 5 {
+		t.Error("search_text should survive on grep alone")
+	}
+	e.Bins["grep"] = false
+	available := catalog.Available(catalog.All(), e)
+	for _, tool := range available {
+		if tool.Name == "search_text" {
+			t.Error("search_text needs ripgrep or grep")
+		}
+	}
+	if len(available) != 4 {
+		t.Errorf("available = %d, want 4 without either search program", len(available))
+	}
+
+	// read_manual disappears with man, since that is all it runs.
+	e.Bins["man"] = false
+	for _, tool := range catalog.Available(catalog.All(), e) {
+		if tool.Name == "read_manual" {
+			t.Error("read_manual needs man")
 		}
 	}
 }
 
-// answersFor builds the full answer set for one command's spec, exercising
-// every slot. Optional slots come back as "the user said nothing".
-func answersFor(spec catalog.Spec, cmdID string, e *env.Env) map[string]typesafe.Answer {
+// answersFor builds the full answer set for one binding, exercising every
+// parameter. Gated parameters come back as "the request said nothing".
+func answersFor(binding catalog.Binding, tool string, e *env.Env) map[string]typesafe.Answer {
 	out := map[string]typesafe.Answer{}
-	for _, slot := range spec.Slots {
-		qid := slot.QuestionID(cmdID)
-		if slot.IsFlag() {
+	for _, param := range binding.Params {
+		qid := param.QuestionID(tool)
+		if param.Kind == catalog.FlagParam {
 			out[qid] = noul(0)
 		} else {
-			out[qid] = choice(firstKey(slot, e), 1)
+			out[qid] = choice(firstValue(param, e), 1)
 		}
-		if slot.Stated {
-			// "The user said nothing about this", so the declared default
-			// stands. Individual tests override this to exercise the gate.
+		if param.Gated {
 			out[qid+"?"] = noul(0)
 		}
 	}
 	return out
 }
 
-func firstKey(slot catalog.Slot, e *env.Env) string {
-	opts := slot.Options
-	if slot.OptionsFor != nil {
-		opts = slot.OptionsFor(e)
-	}
-	for _, o := range opts {
-		if o.Key != catalog.NoneKey {
-			return o.Key
+func firstValue(param catalog.Param, e *env.Env) string {
+	for _, v := range valuesOf(param, e) {
+		if v.Key != catalog.NoneKey {
+			return v.Key
 		}
 	}
 	return catalog.NoneKey
@@ -121,145 +144,123 @@ func choice(key string, confidence float64) typesafe.Answer {
 	}
 }
 
-func specFor(t *testing.T, e *env.Env, id string) (catalog.Command, catalog.Spec) {
+func bindingFor(t *testing.T, e *env.Env, name string) (catalog.Tool, catalog.Binding) {
 	t.Helper()
-	for _, cmd := range catalog.All() {
-		if cmd.ID != id {
+	for _, tool := range catalog.All() {
+		if tool.Name != name {
 			continue
 		}
-		spec, ok := cmd.Build(e)
+		binding, ok := tool.Bind(e)
 		if !ok {
-			t.Fatalf("%s: not available", id)
+			t.Fatalf("%s: not available", name)
 		}
-		return cmd, spec
+		return tool, binding
 	}
-	t.Fatalf("no catalog entry %q", id)
-	return catalog.Command{}, catalog.Spec{}
+	t.Fatalf("no tool named %q", name)
+	return catalog.Tool{}, catalog.Binding{}
 }
 
-func assemble(t *testing.T, e *env.Env, id string, overrides map[string]typesafe.Answer) catalog.Assembled {
+func fill(t *testing.T, e *env.Env, name string, overrides map[string]typesafe.Answer) catalog.Result {
 	t.Helper()
-	cmd, spec := specFor(t, e, id)
-	answers := answersFor(spec, cmd.ID, e)
+	tool, binding := bindingFor(t, e, name)
+	answers := answersFor(binding, tool.Name, e)
 	for k, v := range overrides {
 		answers[k] = v
 	}
-	got, err := catalog.Assemble(cmd, spec, answers, e, nil)
+	got, err := catalog.Fill(tool, binding, answers, e)
 	if err != nil {
-		t.Fatalf("Assemble(%s): %v", id, err)
+		t.Fatalf("Fill(%s): %v", name, err)
 	}
 	return got
 }
 
-func TestFlagsAreOptIn(t *testing.T) {
+func TestAFlagStaysOffUnlessTheRequestAsksForIt(t *testing.T) {
 	e := testEnv()
-	got := assemble(t, e, "list_directory", nil)
+	got := fill(t, e, "list_directory", nil)
 	if strings.Join(got.Argv, " ") != "ls ." {
 		t.Errorf("argv = %q, want %q", got.Argv, "ls .")
 	}
+	if got.Call.Tool != "list_directory" {
+		t.Errorf("call tool = %q", got.Call.Tool)
+	}
+	if got.Call.Args["hidden"] != false {
+		t.Errorf("call args = %v, want hidden false", got.Call.Args)
+	}
 }
 
-func TestFlagsAreAddedWhenTheUserAsksForThem(t *testing.T) {
+func TestAFlagLandsWhenTheRequestAsksForIt(t *testing.T) {
 	e := testEnv()
-	got := assemble(t, e, "list_directory", map[string]typesafe.Answer{
-		"list_directory.ls_hidden":  noul(0.91),
-		"list_directory.ls_hidden?": noul(0.95),
-		"list_directory.ls_long":    noul(0.88),
-		"list_directory.ls_long?":   noul(0.90),
+	got := fill(t, e, "list_directory", map[string]typesafe.Answer{
+		"list_directory.hidden":   noul(0.91),
+		"list_directory.hidden?":  noul(0.95),
+		"list_directory.details":  noul(0.88),
+		"list_directory.details?": noul(0.90),
 	})
 	if strings.Join(got.Argv, " ") != "ls -a -l ." {
 		t.Errorf("argv = %q", got.Argv)
 	}
+	if got.Call.Args["hidden"] != true || got.Call.Args["details"] != true {
+		t.Errorf("call args = %v, want both flags true", got.Call.Args)
+	}
 }
 
-func TestMutuallyExclusiveFlagsNeverBothLand(t *testing.T) {
+// TestSilenceDoesNotAddAFlag is the regression test for the first thing the
+// real model got wrong. Asked "list all files in this directory", it answered
+// the hidden-files flag at p=0.52, just over the 0.5 line, and the command came
+// back as `ls -a .`. The request says nothing about hidden entries, so the gate
+// must drop the flag even though the flag question itself leans yes.
+func TestSilenceDoesNotAddAFlag(t *testing.T) {
 	e := testEnv()
-	got := assemble(t, e, "list_directory", map[string]typesafe.Answer{
-		"list_directory.ls_sort_time":  noul(0.70),
-		"list_directory.ls_sort_time?": noul(0.85),
-		"list_directory.ls_sort_size":  noul(0.90),
-		"list_directory.ls_sort_size?": noul(0.92),
+	got := fill(t, e, "list_directory", map[string]typesafe.Answer{
+		"list_directory.hidden":  noul(0.52),
+		"list_directory.hidden?": noul(0.18),
 	})
-	if strings.Join(got.Argv, " ") != "ls -S ." {
-		t.Errorf("argv = %q, want only the stronger sort flag", got.Argv)
+	if strings.Join(got.Argv, " ") != "ls ." {
+		t.Errorf("argv = %q, want silence to leave the flag off", got.Argv)
+	}
+	for _, note := range got.Notes {
+		if note.Param == "hidden" && !strings.Contains(note.Detail, "not mentioned") {
+			t.Errorf("the note should say the request was silent, got %q", note.Detail)
+		}
 	}
 }
 
-func TestOptionalArgumentsFallBackToTheDeclaredDefault(t *testing.T) {
+func TestAnUnfillableParameterIsReportedNotGuessed(t *testing.T) {
 	e := testEnv()
-	got := assemble(t, e, "find_files", nil)
-	// Nothing was stated: the depth default stands, and the name match is
-	// dropped entirely because there is no pattern for it to attach to.
-	if strings.Join(got.Argv, " ") != "find . -maxdepth 3" {
-		t.Errorf("argv = %q", got.Argv)
-	}
-}
-
-func TestAPatternBringsItsOwnFlag(t *testing.T) {
-	e := testEnv()
-	got := assemble(t, e, "find_files", map[string]typesafe.Answer{
-		"name_pattern":  choice("*.go", 0.95),
-		"name_pattern?": noul(0.97),
-	})
-	if strings.Join(got.Argv, " ") != "find . -maxdepth 3 -name *.go" {
-		t.Errorf("argv = %q", got.Argv)
-	}
-}
-
-func TestCaseInsensitiveMatchIsUsedWhenAsked(t *testing.T) {
-	e := testEnv()
-	got := assemble(t, e, "find_files", map[string]typesafe.Answer{
-		"name_pattern":           choice("*.go", 0.95),
-		"name_pattern?":          noul(0.97),
-		"find_files.find_match":  choice("insensitive", 0.9),
-		"find_files.find_match?": noul(0.9),
-		"find_files.find_type":   choice("f", 0.95),
-		"find_files.find_type?":  noul(0.95),
-	})
-	if strings.Join(got.Argv, " ") != "find . -maxdepth 3 -type f -iname *.go" {
-		t.Errorf("argv = %q", got.Argv)
-	}
-}
-
-func TestUnresolvableRequiredValueIsReportedNotGuessed(t *testing.T) {
-	e := testEnv()
-	// show_file cannot act on "no path at all", so that option is not even
-	// offered to it, the escape hatch is what an unresolvable target looks
-	// like, and it must fail loudly rather than pick something.
-	got := assemble(t, e, "show_file", map[string]typesafe.Answer{
+	// show_file cannot print "no file at all", so the escape hatch is the only
+	// way to leave its target unfilled, and it must fail loudly.
+	got := fill(t, e, "show_file", map[string]typesafe.Answer{
 		"target_path": choice(catalog.NoneKey, 0.9),
 	})
-	if len(got.Missing) != 1 || got.Missing[0] != "target_path" {
-		t.Fatalf("Missing = %v, want [target_path]", got.Missing)
+	if len(got.Unfilled) != 1 || got.Unfilled[0] != "target" {
+		t.Fatalf("Unfilled = %v, want [target]", got.Unfilled)
+	}
+	if _, ok := got.Call.Args["target"]; ok {
+		t.Errorf("an unfilled parameter must not appear in the call: %v", got.Call.Args)
 	}
 }
 
-func TestEscapeHatchOnARequiredValueIsAlsoUnresolved(t *testing.T) {
+func TestAnAnswerOutsideTheClosedSetIsAProtocolError(t *testing.T) {
+	// The API guarantees answers come from the values we supplied. If that ever
+	// stops being true, the right move is to fail loudly: the value is never
+	// turned into a token, and no default quietly papers over it.
 	e := testEnv()
-	got := assemble(t, e, "count_lines", map[string]typesafe.Answer{
-		"target_path": choice(catalog.NoneKey, 0.8),
-	})
-	if len(got.Missing) != 1 {
-		t.Fatalf("Missing = %v, want the target to be unresolved", got.Missing)
-	}
-}
+	tool, binding := bindingFor(t, e, "list_directory")
+	answers := answersFor(binding, tool.Name, e)
+	answers["target_path"] = choice(".; rm -rf /", 0.99)
 
-func TestForcedLiteralReplacesTheDecision(t *testing.T) {
-	e := testEnv()
-	cmd, spec := specFor(t, e, "list_directory")
-	answers := answersFor(spec, cmd.ID, e)
-	got, err := catalog.Assemble(cmd, spec, answers, e, map[string]string{"target_path": "/etc/hosts"})
-	if err != nil {
-		t.Fatalf("Assemble: %v", err)
+	_, err := catalog.Fill(tool, binding, answers, e)
+	if err == nil {
+		t.Fatal("expected an error for an answer outside the closed set")
 	}
-	if strings.Join(got.Argv, " ") != "ls /etc/hosts" {
-		t.Errorf("argv = %q", got.Argv)
+	if !strings.Contains(err.Error(), "not one of its values") {
+		t.Errorf("error = %v, want it to name the contract violation", err)
 	}
 }
 
 func TestSearchPrefersRipgrepAndKeepsTheTermPositional(t *testing.T) {
 	e := testEnv()
-	got := assemble(t, e, "search_text", map[string]typesafe.Answer{
+	got := fill(t, e, "search_text", map[string]typesafe.Answer{
 		"search_terms": choice("TODO", 0.9),
 	})
 	if strings.Join(got.Argv, " ") != "rg -e TODO ." {
@@ -267,7 +268,7 @@ func TestSearchPrefersRipgrepAndKeepsTheTermPositional(t *testing.T) {
 	}
 
 	e.Bins["rg"] = false
-	got = assemble(t, e, "search_text", map[string]typesafe.Answer{
+	got = fill(t, e, "search_text", map[string]typesafe.Answer{
 		"search_terms": choice("TODO", 0.9),
 	})
 	if strings.Join(got.Argv, " ") != "grep -r -e TODO ." {
@@ -275,109 +276,62 @@ func TestSearchPrefersRipgrepAndKeepsTheTermPositional(t *testing.T) {
 	}
 }
 
-func TestAnAnswerOutsideTheClosedSetIsAProtocolError(t *testing.T) {
-	// The API guarantees answers come from the options we supplied. If that
-	// ever stops being true, the right move is to fail loudly: the value is
-	// never turned into a token, and no fallback quietly papers over it.
+func TestTheFileFilterCarriesItsOwnFlag(t *testing.T) {
 	e := testEnv()
-	cmd, spec := specFor(t, e, "list_directory")
-	answers := answersFor(spec, cmd.ID, e)
-	answers["target_path"] = choice(".; rm -rf /", 0.99)
-
-	_, err := catalog.Assemble(cmd, spec, answers, e, nil)
-	if err == nil {
-		t.Fatal("expected an error for an answer outside the closed set")
+	got := fill(t, e, "search_text", map[string]typesafe.Answer{
+		"search_terms":       choice("TODO", 0.9),
+		"search_text.files":  choice("*.go", 0.93),
+		"search_text.files?": noul(0.91),
+	})
+	if strings.Join(got.Argv, " ") != "rg -g *.go -e TODO ." {
+		t.Errorf("argv = %q, want the file filter applied", got.Argv)
 	}
-	if !strings.Contains(err.Error(), "not one of its options") {
-		t.Errorf("error = %v, want it to name the contract violation", err)
+	if got.Call.Args["files"] != "*.go" {
+		t.Errorf("call args = %v, want files *.go", got.Call.Args)
+	}
+
+	// And when the request says nothing about files, no flag is left dangling.
+	got = fill(t, e, "search_text", map[string]typesafe.Answer{
+		"search_terms": choice("TODO", 0.9),
+	})
+	if strings.Contains(strings.Join(got.Argv, " "), "-g") {
+		t.Errorf("argv = %q, want no flag without a filter", got.Argv)
 	}
 }
 
-func TestAllowlistContainsProgramsAndNoFlags(t *testing.T) {
+func TestShowFilePicksHowMuchToPrint(t *testing.T) {
 	e := testEnv()
-	set := map[string]bool{}
-	for _, a := range catalog.Allowlist(catalog.Specs(catalog.All(), e), e) {
-		set[a] = true
-		if strings.HasPrefix(a, "-") {
-			t.Errorf("allowlist contains a flag: %q", a)
-		}
-	}
-	// Programs reachable in this environment, including the ones a slot
-	// provides rather than the template (head/tail come from show_reader).
-	for _, want := range []string{"ls", "find", "rg", "cat", "head", "tail", "wc", "du", "file", "git", "pwd"} {
-		if !set[want] {
-			t.Errorf("allowlist is missing %q", want)
-		}
-	}
-	if set["grep"] {
-		t.Error("grep is not reachable while ripgrep is installed")
-	}
-
-	// With ripgrep gone, the grep branch is what must be reachable.
-	e.Bins["rg"] = false
-	set = map[string]bool{}
-	for _, a := range catalog.Allowlist(catalog.Specs(catalog.All(), e), e) {
-		set[a] = true
-	}
-	if !set["grep"] {
-		t.Error("allowlist is missing grep in an environment without ripgrep")
-	}
-	if set["rg"] {
-		t.Error("rg should be unreachable when it is not installed")
-	}
-}
-
-func TestQuestionIdsAreDeduplicatedAcrossCommands(t *testing.T) {
-	e := testEnv()
-	all := catalog.All()
-	specs := catalog.Specs(all, e)
-	questions := catalog.Questions(all, specs, e)
-
-	// target_path is shared by eight commands and must be asked once.
-	count := 0
-	for id := range questions {
-		if id == "target_path" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("target_path asked %d times, want 1", count)
-	}
-	if _, ok := questions["find_files.find_depth?"]; !ok {
-		t.Error("optional slots must come with their stated question")
-	}
-	if _, ok := questions["intent"]; ok {
-		t.Error("intent is added by resolve, not by Questions")
+	got := fill(t, e, "show_file", map[string]typesafe.Answer{
+		"show_file.how_much": choice("first_lines", 0.9),
+		"target_path":        choice("README.md", 0.98),
+	})
+	if strings.Join(got.Argv, " ") != "head -n 20 README.md" {
+		t.Errorf("argv = %q", got.Argv)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Invariants that the whole design rests on. These are the tests that would
-// have to fail for jev-cli to become "a model that writes shell commands".
+// Invariants the whole layer rests on. These are the tests that would have to
+// fail for jev-cli to become "a model that writes shell commands".
 // ---------------------------------------------------------------------------
 
-// authoredTokens is every token the catalog itself wrote down: template
-// literals, flag token groups, option arguments and empty-value fallbacks.
-func authoredTokens(cmdID string, spec catalog.Spec, e *env.Env) map[string]bool {
+// authoredTokens is every token the layer itself wrote down: template literals,
+// flag tokens, value arguments.
+func authoredTokens(binding catalog.Binding, e *env.Env) map[string]bool {
 	set := map[string]bool{}
-	for _, tok := range spec.Argv {
+	for _, tok := range binding.Argv {
 		if !isPlaceholderToken(tok) {
 			set[tok] = true
 		}
 	}
-	for _, slot := range spec.Slots {
-		for _, argv := range slot.TrueArgvByCmd {
-			for _, tok := range argv {
-				set[tok] = true
-			}
-		}
-		for _, opt := range optionsOf(slot, e) {
-			for _, tok := range append(append([]string{}, opt.Argv...), slot.EmptyFallback...) {
-				set[tok] = true
-			}
-		}
-		for _, tok := range slot.EmptyFallback {
+	for _, param := range binding.Params {
+		for _, tok := range param.Argv {
 			set[tok] = true
+		}
+		for _, v := range valuesOf(param, e) {
+			for _, tok := range v.Argv {
+				set[tok] = true
+			}
 		}
 	}
 	delete(set, "")
@@ -388,26 +342,26 @@ func isPlaceholderToken(tok string) bool {
 	return len(tok) > 2 && tok[0] == '{' && tok[len(tok)-1] == '}'
 }
 
-func optionsOf(slot catalog.Slot, e *env.Env) []catalog.Value {
-	if slot.OptionsFor != nil {
-		return slot.OptionsFor(e)
+func valuesOf(param catalog.Param, e *env.Env) []catalog.Value {
+	if param.ValuesFor != nil {
+		return param.ValuesFor(e)
 	}
-	return slot.Options
+	return param.Values
 }
 
-// answerCombos sweeps every slot across every value it can take, so the sweep
-// covers the flags together, not just one at a time.
-func answerCombos(spec catalog.Spec, cmdID string, e *env.Env) []map[string]typesafe.Answer {
+// answerCombos sweeps every parameter across every value it can take, so the
+// sweep covers the flags together, not just one at a time.
+func answerCombos(binding catalog.Binding, tool string, e *env.Env) []map[string]typesafe.Answer {
 	combos := []map[string]typesafe.Answer{{}}
 	const cap = 4000
 
-	for _, slot := range spec.Slots {
-		qid := slot.QuestionID(cmdID)
+	for _, param := range binding.Params {
+		qid := param.QuestionID(tool)
 		var variants []map[string]typesafe.Answer
 
 		switch {
-		case slot.IsFlag():
-			if slot.Stated {
+		case param.Kind == catalog.FlagParam:
+			if param.Gated {
 				variants = []map[string]typesafe.Answer{
 					{qid: noul(0), qid + "?": noul(0)},
 					{qid: noul(1), qid + "?": noul(0)},
@@ -417,21 +371,21 @@ func answerCombos(spec catalog.Spec, cmdID string, e *env.Env) []map[string]type
 			} else {
 				variants = []map[string]typesafe.Answer{{qid: noul(0)}, {qid: noul(1)}}
 			}
-		case slot.Stated:
-			anyOption := catalog.NoneKey
-			for _, opt := range optionsOf(slot, e) {
-				anyOption = opt.Key
+		case param.Gated:
+			anyValue := catalog.NoneKey
+			for _, v := range valuesOf(param, e) {
+				anyValue = v.Key
 				break
 			}
 			variants = []map[string]typesafe.Answer{
-				{qid: choice(anyOption, 1), qid + "?": noul(0)},
+				{qid: choice(anyValue, 1), qid + "?": noul(0)},
 			}
-			for _, opt := range optionsOf(slot, e) {
-				variants = append(variants, map[string]typesafe.Answer{qid: choice(opt.Key, 1), qid + "?": noul(1)})
+			for _, v := range valuesOf(param, e) {
+				variants = append(variants, map[string]typesafe.Answer{qid: choice(v.Key, 1), qid + "?": noul(1)})
 			}
 		default:
-			for _, opt := range optionsOf(slot, e) {
-				variants = append(variants, map[string]typesafe.Answer{qid: choice(opt.Key, 1)})
+			for _, v := range valuesOf(param, e) {
+				variants = append(variants, map[string]typesafe.Answer{qid: choice(v.Key, 1)})
 			}
 		}
 
@@ -459,39 +413,39 @@ func answerCombos(spec catalog.Spec, cmdID string, e *env.Env) []map[string]type
 func TestEveryTokenInArgvWasAuthoredHere(t *testing.T) {
 	e := testEnv()
 	all := catalog.All()
-	specs := catalog.Specs(all, e)
+	bindings := catalog.Bindings(all, e)
 
-	for _, cmd := range all {
-		spec, ok := specs[cmd.ID]
+	for _, tool := range all {
+		binding, ok := bindings[tool.Name]
 		if !ok {
-			t.Fatalf("%s: no spec", cmd.ID)
+			t.Fatalf("%s: no binding", tool.Name)
 		}
-		allowed := authoredTokens(cmd.ID, spec, e)
-		combos := answerCombos(spec, cmd.ID, e)
+		allowed := authoredTokens(binding, e)
+		combos := answerCombos(binding, tool.Name, e)
 
 		for n, combo := range combos {
-			answers := answersFor(spec, cmd.ID, e)
+			answers := answersFor(binding, tool.Name, e)
 			for k, v := range combo {
 				answers[k] = v
 			}
-			got, err := catalog.Assemble(cmd, spec, answers, e, nil)
+			got, err := catalog.Fill(tool, binding, answers, e)
 			if err != nil {
-				t.Fatalf("%s combo %d: %v", cmd.ID, n, err)
+				t.Fatalf("%s combo %d: %v", tool.Name, n, err)
 			}
 			for i, tok := range got.Argv {
 				if !allowed[tok] {
 					t.Fatalf("%s combo %d: token %q is not authored anywhere in the catalog (argv: %v)",
-						cmd.ID, n, tok, got.Argv)
+						tool.Name, n, tok, got.Argv)
 				}
 				if i == 0 && isShell(tok) {
-					t.Fatalf("%s combo %d: argv[0] is a shell (%q)", cmd.ID, n, tok)
+					t.Fatalf("%s combo %d: argv[0] is a shell (%q)", tool.Name, n, tok)
 				}
 			}
-			if len(got.Missing) == 0 && len(got.Argv) == 0 {
-				t.Fatalf("%s combo %d: resolved with no missing slots but produced no argv", cmd.ID, n)
+			if len(got.Unfilled) == 0 && len(got.Argv) == 0 {
+				t.Fatalf("%s combo %d: filled with nothing unfilled but produced no argv", tool.Name, n)
 			}
 		}
-		t.Logf("%s: %d combinations, all tokens authored", cmd.ID, len(combos))
+		t.Logf("%s: %d combinations, all tokens authored", tool.Name, len(combos))
 	}
 }
 
@@ -503,122 +457,135 @@ func isShell(program string) bool {
 	return false
 }
 
-func TestNoCommandCanReachAShell(t *testing.T) {
+func TestNoToolCanReachAShell(t *testing.T) {
 	e := testEnv()
-	for _, cmd := range catalog.All() {
-		for _, needs := range cmd.Needs {
+	for _, tool := range catalog.All() {
+		for _, needs := range tool.Needs {
 			if isShell(needs) {
-				t.Errorf("%s declares a shell as a dependency: %q", cmd.ID, needs)
+				t.Errorf("%s declares a shell as a dependency: %q", tool.Name, needs)
 			}
 		}
 	}
-	for _, bin := range catalog.Allowlist(catalog.Specs(catalog.All(), e), e) {
+	for _, bin := range catalog.Allowlist(catalog.Bindings(catalog.All(), e), e) {
 		if isShell(bin) {
 			t.Errorf("the allowlist lets a shell through: %q", bin)
 		}
 	}
 	// And nothing in any template asks a program to run a command string.
-	for _, cmd := range catalog.All() {
-		spec, ok := cmd.Build(e)
+	for _, tool := range catalog.All() {
+		binding, ok := tool.Bind(e)
 		if !ok {
 			continue
 		}
-		for _, tok := range spec.Argv {
+		for _, tok := range binding.Argv {
 			if tok == "-c" {
-				t.Errorf("%s has a -c token, which is how a shell is told to run a string", cmd.ID)
+				t.Errorf("%s has a -c token, which is how a shell is told to run a string", tool.Name)
 			}
 		}
 	}
 }
 
-// TestAnEmptyButValidOptionIsNotAnUnresolvedSlot is the regression test for
-// the bug the human-facing test sheet found: `git log` offers "no path at all",
-// which contributes no token by design, and that was being reported as
-// "could not determine: target_path".
-func TestAnEmptyButValidOptionIsNotAnUnresolvedSlot(t *testing.T) {
+func TestAllowlistOnlyNamesProgramsThatExist(t *testing.T) {
 	e := testEnv()
-	// Silence about a path means the whole repository.
-	got := assemble(t, e, "git_log", nil)
-	if len(got.Missing) != 0 {
-		t.Fatalf("Missing = %v, want none: the whole repository is a valid target", got.Missing)
+	// The allowlist is built from the tools that are actually available, which
+	// is what the CLI does, not from every tool the catalog declares.
+	allowed := catalog.Allowlist(catalog.Bindings(catalog.Available(catalog.All(), e), e), e)
+
+	reachable := map[string]bool{}
+	for _, a := range allowed {
+		reachable[a] = true
+		if strings.HasPrefix(a, "-") {
+			t.Errorf("allowlist contains a flag: %q", a)
+		}
+		if !e.Has(a) {
+			t.Errorf("allowlist names %q, which is not installed here", a)
+		}
 	}
-	if want := "git log -n 10 --"; strings.Join(got.Argv, " ") != want {
-		t.Errorf("argv = %q, want %q", got.Argv, want)
+	// head and tail are reachable through a parameter value rather than a
+	// template, so the allowlist has to look inside the values too. grep is
+	// absent here because ripgrep is installed, which is the point: the list is
+	// exactly what can reach the program position, not everything mentioned.
+	for _, want := range []string{"ls", "rg", "cat", "head", "tail", "pwd", "man"} {
+		if !reachable[want] {
+			t.Errorf("allowlist is missing %q", want)
+		}
+	}
+	if reachable["grep"] {
+		t.Error("grep cannot reach argv[0] while ripgrep is installed")
+	}
+	for _, notAProgram := range []string{".", "src", "main.go", "README.md", "TODO", "-a"} {
+		if reachable[notAProgram] {
+			t.Errorf("%q is a value, not a program, and must not be allowlisted", notAProgram)
+		}
 	}
 
-	// Saying "no path at all" explicitly produces the same command, and is
-	// not mistaken for an unresolved slot.
-	got = assemble(t, e, "git_log", map[string]typesafe.Answer{
-		"git_target_path":  choice("no_path_filter", 0.9),
-		"git_target_path?": noul(0.9),
-	})
-	if len(got.Missing) != 0 {
-		t.Fatalf("Missing = %v, want none", got.Missing)
-	}
-	if want := "git log -n 10 --"; strings.Join(got.Argv, " ") != want {
-		t.Errorf("argv = %q, want %q", got.Argv, want)
-	}
-
-	// Naming a path does limit it.
-	got = assemble(t, e, "git_log", map[string]typesafe.Answer{
-		"git_target_path":  choice("main.go", 0.9),
-		"git_target_path?": noul(0.95),
-	})
-	if want := "git log -n 10 -- main.go"; strings.Join(got.Argv, " ") != want {
-		t.Errorf("argv = %q, want %q", got.Argv, want)
-	}
-
-	// And the same answer on a command that cannot act without a path is not
-	// resolvable at all: the option is simply not in its closed set.
-	cmd, spec := specFor(t, e, "show_file")
-	answers := answersFor(spec, cmd.ID, e)
-	answers["target_path"] = choice("no_path_filter", 0.9)
-	if _, err := catalog.Assemble(cmd, spec, answers, e, nil); err == nil {
-		t.Error("show_file must not accept a target that means 'no path'")
+	// A program that disappears from the machine must disappear from the
+	// allowlist as well.
+	e.Bins["ls"] = false
+	for _, a := range catalog.Allowlist(catalog.Bindings(catalog.Available(catalog.All(), e), e), e) {
+		if a == "ls" {
+			t.Error("a program that is not installed reached the allowlist")
+		}
 	}
 }
 
-// TestSharedQuestionIdsAskTheSameQuestion guards the other half of that bug: a
-// question id may only be shared by slots that are identical in kind, gating
-// and option set. Otherwise the first command to declare it silently decides
-// what every other command is asked.
 func TestSharedQuestionIdsAskTheSameQuestion(t *testing.T) {
 	e := testEnv()
 	type shape struct {
-		isFlag  bool
-		stated  bool
-		options string
+		kind   catalog.Kind
+		gated  bool
+		values string
 	}
-	type shapeAndOwner struct {
+	type owned struct {
 		shape shape
-		cmd   string
+		tool  string
 	}
-	seen := map[string]shapeAndOwner{}
+	seen := map[string]owned{}
 
-	for _, cmd := range catalog.All() {
-		spec, ok := cmd.Build(e)
+	for _, tool := range catalog.All() {
+		binding, ok := tool.Bind(e)
 		if !ok {
 			continue
 		}
-		for _, slot := range spec.Slots {
-			qid := slot.QuestionID(cmd.ID)
-			keys := make([]string, 0, len(optionsOf(slot, e)))
-			for _, opt := range optionsOf(slot, e) {
-				keys = append(keys, opt.Key)
+		for _, param := range binding.Params {
+			qid := param.QuestionID(tool.Name)
+			keys := make([]string, 0, len(valuesOf(param, e)))
+			for _, v := range valuesOf(param, e) {
+				keys = append(keys, v.Key)
 			}
 			sort.Strings(keys)
-			now := shape{isFlag: slot.IsFlag(), stated: slot.Stated, options: strings.Join(keys, ",")}
+			now := shape{kind: param.Kind, gated: param.Gated, values: strings.Join(keys, ",")}
 
 			before, ok := seen[qid]
 			if !ok {
-				seen[qid] = shapeAndOwner{shape: now, cmd: cmd.ID}
+				seen[qid] = owned{shape: now, tool: tool.Name}
 				continue
 			}
 			if before.shape != now {
-				t.Errorf("question %q is declared differently:\n  %s: flag=%v stated=%v options=[%s]\n  %s: flag=%v stated=%v options=[%s]",
-					qid, before.cmd, before.shape.isFlag, before.shape.stated, before.shape.options,
-					cmd.ID, now.isFlag, now.stated, now.options)
+				t.Errorf("question %q is declared differently:\n  %s: kind=%v gated=%v values=[%s]\n  %s: kind=%v gated=%v values=[%s]",
+					qid, before.tool, before.shape.kind, before.shape.gated, before.shape.values,
+					tool.Name, now.kind, now.gated, now.values)
 			}
 		}
+	}
+}
+
+func TestQuestionIdsAreDeduplicatedAcrossTools(t *testing.T) {
+	e := testEnv()
+	all := catalog.All()
+	questions := catalog.Questions(all, catalog.Bindings(all, e), e)
+
+	// target_path is shared by three tools and must be asked once.
+	count := 0
+	for id := range questions {
+		if id == "target_path" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("target_path asked %d times, want 1", count)
+	}
+	if _, ok := questions["intent"]; ok {
+		t.Error("the tool-choice question is added by resolve, not by Questions")
 	}
 }

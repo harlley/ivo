@@ -11,15 +11,13 @@ import (
 func writeTree(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"main.go", "README.md", "notas.txt"} {
+	for _, name := range []string{"main.go", "README.md", "notes.txt"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("contents\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, sub := range []string{"src", ".git"} {
-		if err := os.Mkdir(filepath.Join(dir, sub), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Mkdir(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	return dir
 }
@@ -36,16 +34,16 @@ func TestProbeFiltersAndOrdersTheListing(t *testing.T) {
 	if e.CWD != dir {
 		t.Errorf("cwd = %q, want %q", e.CWD, dir)
 	}
-	if e.EntryCount != 5 {
-		t.Errorf("entry_count = %d, want 5", e.EntryCount)
+	if e.EntryCount != 4 {
+		t.Errorf("entry_count = %d, want 4", e.EntryCount)
 	}
 	if e.Truncated {
 		t.Error("nothing should have been truncated")
 	}
-	// Subdirectories first, then files, each alphabetically. The order is
-	// ours so the option list is stable across invocations.
+	// Subdirectories first, then files, each alphabetically. The order is ours
+	// so the option list is stable across invocations.
 	got := EntryNames(e.Entries)
-	want := []string{".git/", "src/", "README.md", "main.go", "notas.txt"}
+	want := []string{"src/", "README.md", "main.go", "notes.txt"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("entries = %v, want %v", got, want)
 	}
@@ -58,7 +56,7 @@ func TestProbeTruncatesAndCountsInCode(t *testing.T) {
 	dir := writeTree(t)
 	t.Chdir(dir)
 
-	e, err := Probe(ProbeOptions{Request: "list", Binaries: nil, MaxEntries: 2})
+	e, err := Probe(ProbeOptions{Request: "list", MaxEntries: 2})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -69,39 +67,8 @@ func TestProbeTruncatesAndCountsInCode(t *testing.T) {
 		t.Error("truncation must be recorded")
 	}
 	// The count is a fact computed here, never asked of the model.
-	if e.EntryCount != 5 {
-		t.Errorf("entry_count = %d, want the real total 5", e.EntryCount)
-	}
-}
-
-func TestProbeFindsTheRepository(t *testing.T) {
-	dir := writeTree(t)
-	nested := filepath.Join(dir, "src", "deep")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(nested)
-
-	e, err := Probe(ProbeOptions{Request: "what changed", Binaries: []string{"git"}})
-	if err != nil {
-		t.Fatalf("Probe: %v", err)
-	}
-	if !e.Git.IsRepo {
-		t.Fatal("a .git further up the tree should be found")
-	}
-	if e.Git.Root != dir {
-		t.Errorf("root = %q, want %q", e.Git.Root, dir)
-	}
-}
-
-func TestProbeWithoutARepositoryIsNotAnError(t *testing.T) {
-	t.Chdir(t.TempDir())
-	e, err := Probe(ProbeOptions{Request: "list"})
-	if err != nil {
-		t.Fatalf("Probe: %v", err)
-	}
-	if e.Git.IsRepo {
-		t.Error("a bare temp directory is not a repository")
+	if e.EntryCount != 4 {
+		t.Errorf("entry_count = %d, want the real total 4", e.EntryCount)
 	}
 }
 
@@ -139,6 +106,19 @@ func TestCandidatesFindGlobsAndExtensions(t *testing.T) {
 		if !contains(e.Candidates.Patterns, want) {
 			t.Errorf("patterns = %v, want %q", e.Candidates.Patterns, want)
 		}
+	}
+}
+
+func TestCandidatesFindFileKindWords(t *testing.T) {
+	t.Chdir(writeTree(t))
+	// A word that names a kind of file is turned into a glob, even when the
+	// directory has no such file yet.
+	e, err := Probe(ProbeOptions{Request: "search for TODO in the go files"})
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !contains(e.Candidates.Patterns, "*.go") {
+		t.Errorf("patterns = %v, want *.go", e.Candidates.Patterns)
 	}
 }
 
@@ -188,9 +168,9 @@ func TestCandidateListsAreCapped(t *testing.T) {
 	}
 }
 
-func TestProbeSurvivesAnUnreadableLookingRequest(t *testing.T) {
+func TestProbeSurvivesAnUntrustedRequest(t *testing.T) {
 	t.Chdir(writeTree(t))
-	// Nothing here should panic: the request is untrusted text.
+	// Nothing here should panic: the request is text a user typed.
 	e, err := Probe(ProbeOptions{Request: "$(rm -rf /) ; `whoami` 'x' \"y\" | cat"})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
@@ -200,15 +180,6 @@ func TestProbeSurvivesAnUnreadableLookingRequest(t *testing.T) {
 			t.Errorf("a shell fragment was offered as a path: %q", p)
 		}
 	}
-}
-
-func contains(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
-			return true
-		}
-	}
-	return false
 }
 
 // TestPortugueseInputIsStillHandled keeps the language-independent promise
@@ -226,4 +197,13 @@ func TestPortugueseInputIsStillHandled(t *testing.T) {
 			t.Errorf("terms = %v should have filtered the function word %q", e.Candidates.Terms, noise)
 		}
 	}
+}
+
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
