@@ -135,28 +135,15 @@ func listDirectory() Tool {
 		},
 		ReadOnly: true,
 		Needs:    []string{"ls"},
+		Document: []string{"ls"},
 		Bind: func(e *env.Env) (Binding, bool) {
+			// The options come from the manual, not from this file, and they
+			// are chosen in a stage of their own once this tool has won.
 			return Binding{
-				Argv: []string{"ls", "{hidden}", "{details}", "{target}"},
-				Params: []Param{
-					targetParam(),
-					{
-						Kind:  FlagParam,
-						Name:  "hidden",
-						Argv:  []string{"-a"},
-						Gated: true,
-						Desc:  "entries whose names begin with a dot, which a plain listing leaves out",
-						Topic: "hidden entries",
-					},
-					{
-						Kind:  FlagParam,
-						Name:  "details",
-						Argv:  []string{"-l"},
-						Gated: true,
-						Desc:  "per-entry detail, such as permissions, size, owner and modification date, instead of just the names",
-						Topic: "the level of detail for each entry",
-					},
-				},
+				Argv:     []string{"ls", FlagsPlaceholder, "{target}"},
+				Params:   []Param{targetParam()},
+				Discover: "ls",
+				Options:  DocumentedOptions(e, "ls"),
 			}, true
 		},
 	}
@@ -174,7 +161,24 @@ func searchText() Tool {
 			"grep for the word timeout",
 		},
 		ReadOnly: true,
+		Document: []string{"rg", "grep"},
 		Bind: func(e *env.Env) (Binding, bool) {
+			// The search program and its flags both come from the environment:
+			// the flags from whichever program is installed, the wording from
+			// that program's own documentation.
+			var program, globFlag string
+			var base []string
+			switch {
+			case e.Has("rg"):
+				program, base, globFlag = "rg", []string{"rg"}, "-g"
+			case e.Has("grep"):
+				program, base, globFlag = "grep", []string{"grep", "-r"}, "--include"
+			default:
+				return Binding{}, false
+			}
+			argv := append([]string{}, base...)
+			argv = append(argv, FlagsPlaceholder, "{files}", "-e", "{terms}", "{target}")
+
 			params := []Param{
 				{
 					Kind: ChoiceParam,
@@ -186,38 +190,14 @@ func searchText() Tool {
 					ValuesFor: searchTermValues,
 				},
 				targetParam(),
-				{
-					Kind:  FlagParam,
-					Name:  "ignore_case",
-					Argv:  []string{"-i"},
-					Gated: true,
-					Desc:  "matching that ignores letter case",
-					Topic: "letter case in the search",
-				},
+				globParam(globFlag),
 			}
-
-			switch {
-			case e.Has("rg"):
-				params = append(params, globParam("-g"))
-				return Binding{
-					Argv: []string{
-						"rg", "{ignore_case}", "{files}",
-						"-e", "{terms}", "{target}",
-					},
-					Params: params,
-				}, true
-
-			case e.Has("grep"):
-				params = append(params, globParam("--include"))
-				return Binding{
-					Argv: []string{
-						"grep", "-r", "{ignore_case}", "{files}",
-						"-e", "{terms}", "{target}",
-					},
-					Params: params,
-				}, true
-			}
-			return Binding{}, false
+			return Binding{
+				Argv:     argv,
+				Params:   params,
+				Discover: program,
+				Options:  DocumentedOptions(e, program),
+			}, true
 		},
 	}
 }

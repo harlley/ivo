@@ -19,6 +19,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/harlleyoliveira/jev-cli/internal/discover"
 )
 
 // Limits on how much context we are willing to put in front of the model.
@@ -71,6 +73,11 @@ type Env struct {
 
 	Bins map[string]bool
 
+	// Docs holds what each program documents about itself, so the catalog can
+	// build its parameters from the program instead of from a hand written
+	// list.
+	Docs map[string]discover.Docs
+
 	Candidates Candidates
 }
 
@@ -87,6 +94,9 @@ type ProbeOptions struct {
 	// Binaries are the programs the catalog might need, to be looked up on
 	// PATH.
 	Binaries []string
+	// Document names the programs whose documentation should be read, so their
+	// own option lists become available as parameters.
+	Document []string
 }
 
 // Probe inspects the machine. It never fails on a missing directory listing or
@@ -112,8 +122,26 @@ func Probe(opts ProbeOptions) (*Env, error) {
 
 	e.Entries, e.EntryCount, e.Truncated, e.EntriesError = readEntries(cwd, opts.MaxEntries)
 	e.Candidates = extractCandidates(e.Request, cwd, home)
+	e.Docs = loadDocs(opts.Document, e.Bins)
 
 	return e, nil
+}
+
+// loadDocs reads what each program documents. A program whose documentation
+// cannot be read is simply absent, which costs its flags and nothing else.
+func loadDocs(programs []string, bins map[string]bool) map[string]discover.Docs {
+	out := map[string]discover.Docs{}
+	for _, program := range programs {
+		if !bins[program] {
+			continue
+		}
+		docs, err := discover.Load(program)
+		if err != nil || len(docs.Options) == 0 {
+			continue
+		}
+		out[program] = docs
+	}
+	return out
 }
 
 func probeBins(names []string) map[string]bool {
@@ -231,16 +259,9 @@ func extractCandidates(request, cwd, home string) Candidates {
 	// 5. Fallback: content words. Over-finding is deliberate. The model's job
 	//    is to pick the right one, and a word it was never offered is a word it
 	//    cannot pick, but a short option list that omits the answer entirely
-	//    makes the command unusable. Without this pass, "where does panic
-	//    appear in this project" would have nothing to offer as a search term.
-	if len(terms) < MaxTermCandidates {
-		for _, tok := range strings.Fields(request) {
-			word := strings.Trim(tok, "\"'`.,;:!?()[]{}<>*")
-			if len([]rune(word)) < 3 || stopwords[strings.ToLower(word)] {
-				continue
-			}
-			addTerm(word)
-		}
+	//    makes the tool unusable.
+	for _, word := range discover.ContentWords(request) {
+		addTerm(word)
 	}
 
 	return Candidates{Paths: paths, Patterns: patterns, Terms: terms}
@@ -257,45 +278,6 @@ var extensionWords = map[string]string{
 	"html": ".html", "css": ".css", "sql": ".sql", "rust": ".rs", "rs": ".rs",
 	"java": ".java", "ruby": ".rb", "rb": ".rb", "php": ".php", "c": ".c",
 	"cpp": ".cpp", "csv": ".csv", "xml": ".xml", "mod": ".mod",
-}
-
-// stopwords keeps the fallback pass from filling the option list with the
-// words every request contains. It is deliberately short: a word wrongly kept
-// costs one option, while a word wrongly dropped can cost the whole command.
-//
-// It holds English and Portuguese words because the phrase the user types is
-// not assumed to be English. Along with extensionWords below, this is the only
-// non-English data in the codebase, and it exists so that a Portuguese phrase
-// reaches the model with the same quality as an English one.
-var stopwords = map[string]bool{
-	// Portuguese function words and the verbs requests usually open with.
-	"as": true, "os": true, "de": true, "do": true, "da": true, "dos": true, "das": true,
-	"em": true, "no": true, "na": true, "nos": true, "nas": true, "um": true, "uma": true,
-	"que": true, "qual": true, "quais": true, "para": true, "por": true, "com": true,
-	"sem": true, "ou": true, "se": true, "meu": true, "minha": true, "meus": true,
-	"minhas": true, "este": true, "esta": true, "esse": true, "essa": true, "isso": true,
-	"nesse": true, "nessa": true, "neste": true, "nesta": true, "desse": true,
-	"dessa": true, "aquele": true, "aquela": true, "seu": true, "sua": true, "seus": true,
-	"suas": true, "ser": true, "sao": true, "são": true, "foi": true, "tem": true,
-	"ter": true, "mais": true, "muito": true, "pouco": true, "nao": true, "não": true,
-	"sim": true, "ja": true, "já": true, "ate": true, "até": true, "sobre": true,
-	"entre": true, "depois": true, "antes": true,
-	"aqui": true, "ali": true, "liste": true, "listar": true, "mostre": true,
-	"mostrar": true, "procure": true, "procurar": true, "busque": true, "buscar": true,
-	"encontre": true, "encontrar": true, "quero": true, "queria": true, "veja": true,
-	"conte": true, "contar": true, "quantas": true, "quantos": true, "quanto": true,
-	"quanta": true, "onde": true,
-	"como": true, "quando": true, "arquivo": true, "arquivos": true, "diretorio": true,
-	"diretório": true, "pasta": true, "pastas": true, "todos": true, "todas": true,
-	"todo": true, "toda": true,
-	// English function words and command verbs.
-	"the": true, "an": true, "of": true, "in": true, "on": true, "at": true, "to": true,
-	"for": true, "with": true, "and": true, "is": true, "are": true, "this": true,
-	"that": true, "these": true, "those": true, "me": true, "my": true, "show": true,
-	"list": true, "find": true, "search": true, "grep": true, "count": true, "what": true,
-	"which": true, "where": true, "when": true, "how": true, "all": true, "file": true,
-	"files": true, "folder": true, "folders": true, "directory": true, "here": true,
-	"please": true, "give": true, "print": true, "cat": true,
 }
 
 // resolveExisting turns a token into a path we can vouch for, or reports that

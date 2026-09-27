@@ -92,21 +92,43 @@ phrase
   |
   +- CODE   probe the environment
   |           cwd, directory listing (counted and filtered here), binaries on
-  |           PATH, and the candidates lifted out of the phrase: paths that
-  |           exist, globs, words worth searching for
+  |           PATH, what each program documents about itself, and the
+  |           candidates lifted out of the phrase: paths that exist, globs,
+  |           words worth searching for
   |
-  +- ONE REQUEST   POST /v1/systemone
-  |           state     = phrase + filtered environment
-  |           questions = which tool, one per parameter value, one gate per
-  |                       gated parameter, and the guardrails
+  +- REQUEST 1   which tool, its operand values, and the guardrails
   |
-  +- CODE   fill the call, bind it to argv, apply the gates
+  +- REQUEST N   the walk, repeated until the call is enough:
+  |                does the call built so far satisfy the request?
+  |                if not, which option should be added?
+  |
+  +- CODE   bind the filled call to argv, apply the gates
   |
   +- CODE   run it, or stop and show it with --dry-run
 ```
 
-Every question goes in a single request. The model evaluates them in parallel,
-so a speculative question about a tool that lost costs tokens, not latency.
+The walk is the shape of the navigation. A tool is chosen first, and only then
+are *its* options listed, so the option question never competes with the flags
+of tools that lost:
+
+```
+list all files, including hidden ones
+  ls                        does ls satisfy it?      no
+  ls -a                     does ls -a satisfy it?   yes
+  -> ls -a .
+
+list everything in detail, including hidden files
+  ls                        does ls satisfy it?      no
+  ls -a                     does ls -a satisfy it?   no
+  ls -a -l                  does ls -a -l satisfy it? yes
+  -> ls -a -l .
+```
+
+Both questions of a round ride in the same request, so a round costs one round
+trip whatever the answer turns out to be, and the walk is bounded at four
+rounds. The last round verifies rather than adds: without it a call that needs
+two options ends on an option nobody checked, which is how `ls -a -A -l` came
+back for a request that wanted two of the three.
 
 ### The layer
 
@@ -172,7 +194,20 @@ Four read-only tools, and nothing else:
 
 Adding a tool means adding one function in
 [`internal/catalog/entries.go`](internal/catalog/entries.go): a name, the
-description the model chooses by, and the parameters with their binding.
+description the model chooses by, and the parameters with their binding. Its
+flags are not written down at all: they are read from the program.
+
+| Tool | Options come from | Read from | Cost |
+| --- | --- | --- | --- |
+| `list_directory` | `ls` | `man ls` (BSD `ls` has no `--help`) | 46 options, 26 kB |
+| `search_text` | `rg` | `rg --help` | 104 options, 74 kB |
+| `search_text` (fallback) | `grep` | `man grep` | 64 options, 15 kB |
+
+`--help` is consulted first, and it is not only cheaper: `man rg` is 108 kB and
+parses to *zero* options here, so for ripgrep the help output is the only source
+that works at all. The manual is the fallback for programs that only have one,
+which on macOS includes every BSD tool. The choice, the source and its size are
+cached under `~/Library/Caches/jev/docs`, and `jev --tools <name>` shows them.
 
 ### Navigating the catalog
 
@@ -243,11 +278,12 @@ effect.
 The current run, against `jev-1.13.0`:
 
 ```
-15/15 runs passed, agreement 15/15 cases, 4.9s, 47337 tokens, jev-1.13.0
+15/15 runs passed, agreement 15/15 cases, 7.2s, 61548 tokens, jev-1.13.0
 ```
 
 45/45 over three consecutive runs, with every case producing an identical
-decision each time.
+decision each time. The tokens buy up to five requests per phrase: one to choose
+the tool, and up to four rounds of the walk.
 
 The eval earned its place immediately. Its first run failed two cases, and both
 were real:
@@ -259,7 +295,10 @@ were real:
 
 Neither was a threshold problem. Both questions were phrased in terms of shell
 flags rather than in terms of a tool's parameters, which is the whole point of
-having the layer.
+having the layer. A second round of failures, after the options started coming
+from the manual, is what forced the staged walk: asking about every option of
+every tool in one request put eighty questions in flight and the needed flags
+came back below the line.
 
 ## Tests
 

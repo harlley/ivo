@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -99,6 +100,7 @@ func run() int {
 		}
 		fmt.Printf("     expected: %s\n", failure.Case.Expectation())
 		fmt.Printf("     got:      %v (%s)\n", failure.Outcome.Argv, failure.Failure)
+		fmt.Printf("     flags:    %v %s\n", failure.Flags, formatFlagAnswers(failure.FlagAnswers))
 	}
 
 	agree, total := report.Agreement()
@@ -126,6 +128,10 @@ func evaluate(client *typesafe.Client, c eval.Case, timeout time.Duration) eval.
 		Request:    c.Phrase,
 		MaxEntries: maxEntries,
 		Binaries:   catalog.Binaries(),
+		// The programs to mine: without this the flag stage has nothing to
+		// offer, and the eval would silently measure a smaller layer than the
+		// CLI runs.
+		Document: catalog.Documented(catalog.All()),
 	})
 	if err != nil {
 		result.Failure = err.Error()
@@ -140,16 +146,12 @@ func evaluate(client *typesafe.Client, c eval.Case, timeout time.Duration) eval.
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	response, err := client.SystemOne(ctx, plan.Request)
+	evaluation, err := plan.Evaluate(ctx, client)
 	if err != nil {
 		result.Failure = err.Error()
 		return result
 	}
-	decision, err := plan.Decide(response.Response, resolve.DecideOptions{})
-	if err != nil {
-		result.Failure = err.Error()
-		return result
-	}
+	decision := evaluation.Decision
 
 	outcome := eval.Outcome{
 		Verdict:    string(decision.Verdict),
@@ -162,10 +164,31 @@ func evaluate(client *typesafe.Client, c eval.Case, timeout time.Duration) eval.
 	}
 	result.Outcome = outcome
 	result.Failure = c.Check(outcome)
-	result.Latency = response.Latency
-	result.Tokens = response.Response.Usage.Total()
-	result.Model = response.Response.Model
+	result.Latency = evaluation.Latency
+	result.Tokens = evaluation.Usage.Total()
+	result.Model = evaluation.Model
+	result.Flags = evaluation.Flags
+	result.FlagAnswers = evaluation.FlagAnswers
 	return result
+}
+
+// formatFlagAnswers shows what the flag stage decided, which is the first thing
+// to look at when a case misses the option it needed.
+func formatFlagAnswers(answers map[string]typesafe.Answer) string {
+	if len(answers) == 0 {
+		return "(no flag stage ran)"
+	}
+	keys := make([]string, 0, len(answers))
+	for key := range answers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s(%.2f)",
+			key, answers[key].Choice, answers[key].Confidence))
+	}
+	return strings.Join(parts, " ")
 }
 
 func loadCases(path string) ([]eval.Case, error) {

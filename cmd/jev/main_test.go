@@ -36,6 +36,14 @@ func fakeAnswers(t *testing.T, req map[string]any) map[string]any {
 		case "noul":
 			value := 0.05
 			switch {
+			case strings.HasPrefix(id, "satisfied."):
+				// The walk stops as soon as the call built so far is enough.
+				// A phrase carrying "details" needs one option first, which is
+				// how the tests exercise the recursion.
+				value = 0.9
+				if strings.Contains(phrase, "details") && id == "satisfied.0" {
+					value = 0.1
+				}
 			case id == "guardrail.tool_is_clear":
 				value = 0.97
 			case id == "guardrail.destructive_request" && strings.Contains(phrase, "delete"):
@@ -69,6 +77,14 @@ func fakeAnswers(t *testing.T, req map[string]any) map[string]any {
 					if key != "none_of_these" {
 						pick = key
 						break
+					}
+				}
+			}
+			if strings.HasPrefix(id, "options.") {
+				pick = "none_of_these"
+				if strings.Contains(phrase, "details") && id == "options.0" {
+					if _, documented := criteria["-l"]; documented {
+						pick = "-l"
 					}
 				}
 			}
@@ -335,7 +351,7 @@ func TestToolsDetailsOneTool(t *testing.T) {
 		t.Fatalf("exit = %d", code)
 	}
 	out := stdout.String()
-	for _, want := range []string{"search_text", "terms", "target", "ignore_case", "files", "binds to", "manual"} {
+	for _, want := range []string{"search_text", "terms", "target", "files", "documented by", "binds to", "manual"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the tool page is missing %q:\n%s", want, out)
 		}
@@ -368,5 +384,23 @@ func TestToolsNamesAnUnknownTool(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "list_directory") {
 		t.Errorf("an unknown name should still show the list:\n%s", stdout.String())
+	}
+}
+
+// TestTheWalkAddsTheOptionTheRequestNeeds runs the whole navigation through the
+// binary: the tool is chosen, the plain call is judged insufficient, and one
+// option is added, which is exactly the sequence the design turns on.
+func TestTheWalkAddsTheOptionTheRequestNeeds(t *testing.T) {
+	server := fakeTypeSafe(t)
+	defer server.Close()
+	newTestCLI(t, server.URL)
+
+	var stdout, stderr bytes.Buffer
+	code := realMain([]string{"--dry-run", "list the files with details"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit = %d\nstderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ls -l .") {
+		t.Errorf("the walk did not add the option the request needed:\n%s", stdout.String())
 	}
 }

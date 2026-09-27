@@ -76,6 +76,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		Request:    phrase,
 		MaxEntries: maxEntries,
 		Binaries:   catalog.Binaries(),
+		Document:   catalog.Documented(catalog.All()),
 	})
 	if err != nil {
 		printer.Error("could not inspect the environment: %v", err)
@@ -112,7 +113,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	client := typesafe.NewClient(apiKey, typesafe.WithBaseURL(baseURL()))
-	result, err := client.SystemOne(ctx, plan.Request)
+	evaluation, err := plan.Evaluate(ctx, client)
 	if err != nil {
 		if typesafe.IsAuthError(err) {
 			printer.Error("the API rejected the API key. Check %s.", typesafe.EnvAPIKey)
@@ -121,12 +122,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		printer.Error("%v", err)
 		return exitError
 	}
-
-	decision, err := plan.Decide(result.Response, resolve.DecideOptions{})
-	if err != nil {
-		printer.Error("%v", err)
-		return exitError
-	}
+	decision := evaluation.Decision
 
 	// Anything but a confident, unblocked verdict stops here and explains
 	// itself. This is the only thing standing between a phrase and a command,
@@ -317,6 +313,16 @@ func renderTool(p *ui.Printer, e *env.Env, tool catalog.Tool) {
 		p.Field(param.Name, detail)
 	}
 	// The template, not a command line: the placeholders are shown as they are.
+	if len(binding.Options) > 0 {
+		source := fmt.Sprintf("%d documented by %s", len(binding.Options), binding.Discover)
+		if docs, ok := e.Docs[binding.Discover]; ok {
+			source += fmt.Sprintf(", read from %s (%d bytes)", docs.Source, docs.Bytes)
+		}
+		p.Field("options", source)
+		for _, option := range binding.Options {
+			p.Line("    %-22s %s", strings.Join(option.Flags, ", "), firstSentence(option.Desc))
+		}
+	}
 	p.Field("binds to", strings.Join(binding.Argv, " "))
 	for _, program := range catalog.Programs(binding, e) {
 		p.Field("manual", fmt.Sprintf("man %s   (or %s --help)", program, program))

@@ -1,20 +1,26 @@
 package resolve_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/harlleyoliveira/jev-cli/internal/catalog"
+	"github.com/harlleyoliveira/jev-cli/internal/discover"
 	"github.com/harlleyoliveira/jev-cli/internal/env"
 	"github.com/harlleyoliveira/jev-cli/internal/resolve"
+	"github.com/harlleyoliveira/jev-cli/internal/run"
 	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
 )
 
-func testEnv() *env.Env {
+func testEnv(t *testing.T) *env.Env {
+	t.Helper()
 	bins := map[string]bool{}
 	for _, b := range catalog.Binaries() {
 		bins[b] = true
@@ -32,13 +38,14 @@ func testEnv() *env.Env {
 			{Name: "README.md"},
 		},
 		EntryCount: 3,
+		Docs:       testDocs(t),
 		Candidates: env.Candidates{Terms: []string{"TODO"}, Patterns: []string{"*.go"}},
 	}
 }
 
 func plan(t *testing.T) *resolve.Plan {
 	t.Helper()
-	p, err := resolve.Build(testEnv())
+	p, err := resolve.Build(testEnv(t))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -107,6 +114,7 @@ func TestDecideVerdicts(t *testing.T) {
 		name     string
 		answers  map[string]typesafe.Answer
 		verdict  resolve.Verdict
+		flags    []string
 		wantArgv string
 		// wantSuggestion marks the verdicts that should still carry the tool's
 		// best reading of the phrase, for display only.
@@ -122,13 +130,12 @@ func TestDecideVerdicts(t *testing.T) {
 			wantArgv: "ls .",
 		},
 		{
-			name: "flags add their tokens",
+			name: "the options chosen in the flag stage land in the command",
 			answers: map[string]typesafe.Answer{
 				"intent":                  choice("list_directory", 0.94),
 				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-				"list_directory.hidden":   {Type: typesafe.KindNoul, Noul: 0.9},
-				"list_directory.hidden?":  {Type: typesafe.KindNoul, Noul: 0.9},
 			},
+			flags:    []string{"-a"},
 			verdict:  resolve.VerdictAct,
 			wantArgv: "ls -a .",
 		},
@@ -205,7 +212,7 @@ func TestDecideVerdicts(t *testing.T) {
 			for k, v := range tc.answers {
 				answers[k] = v
 			}
-			decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, resolve.DecideOptions{})
+			decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, tc.flags, resolve.DecideOptions{})
 			if err != nil {
 				t.Fatalf("Decide: %v", err)
 			}
@@ -252,7 +259,7 @@ func TestAlternativesAreOfferedOnALowConfidenceAnswer(t *testing.T) {
 			catalog.NoneKey:  0.05,
 		},
 	}
-	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, resolve.DecideOptions{})
+	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, nil, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -300,34 +307,140 @@ func TestThePlanAsksEveryQuestionAssemblyNeeds(t *testing.T) {
 	}
 }
 
-// TestSilenceDoesNotAddAFlag is the regression test for the first thing the
-// real model got wrong: the hidden-files flag came back at p=0.52 for a request
-// that never mentions hidden files.
-func TestSilenceDoesNotAddAFlag(t *testing.T) {
+// scriptedAsker answers a sequence of requests, so the walk is covered without
+// a network and without a model.
+type scriptedAsker struct {
+	t        *testing.T
+	scripted []map[string]typesafe.Answer
+	requests []typesafe.SystemOneRequest
+}
+
+func (a *scriptedAsker) SystemOne(_ context.Context, request typesafe.SystemOneRequest) (*typesafe.Result, error) {
+	a.requests = append(a.requests, request)
+	if len(a.scripted) == 0 {
+		a.t.Fatalf("unexpected request %d", len(a.requests))
+	}
+	answers := a.scripted[0]
+	a.scripted = a.scripted[1:]
+	return &typesafe.Result{Response: &typesafe.SystemOneResponse{Model: "scripted", Answers: answers}}, nil
+}
+
+func noul(v float64) typesafe.Answer { return typesafe.Answer{Type: typesafe.KindNoul, Noul: v} }
+
+// stageOne is what a first stage needs to pick a tool and act on it.
+func stageOne(tool string, confidence float64) map[string]typesafe.Answer {
+	return map[string]typesafe.Answer{
+		"intent":                  choice(tool, confidence),
+		"guardrail.tool_is_clear": noul(0.95),
+		"target_path":             choice(".", 0.97),
+	}
+}
+
+// TestTheWalkAccumulatesOptionsUntilTheCallSatisfies is the recursion the design
+// turns on: the plain call does not satisfy the request, so one option is added,
+// and the question is asked again with the call so far.
+func TestTheWalkAccumulatesOptionsUntilTheCallSatisfies(t *testing.T) {
 	p := plan(t)
-	answers := autoAnswers(p.Request)
-	answers["intent"] = choice("list_directory", 1.0)
-	answers["target_path"] = choice(".", 1.0)
-	answers["guardrail.tool_is_clear"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.96}
-	answers["list_directory.hidden"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.52}
-	answers["list_directory.hidden?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.18}
+	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		stageOne("list_directory", 0.95),
+		// Round one: ls alone is not enough, so add -a.
+		{"satisfied.0": noul(0.08), "options.0": choice("-a", 0.94)},
+		// Round two: ls -a is still not enough, so add -l.
+		{"satisfied.1": noul(0.21), "options.1": choice("-l", 0.90)},
+		// Round three: ls -a -l answers it.
+		{"satisfied.2": noul(0.93), "options.2": choice(catalog.NoneKey, 0.8)},
+	}}
 
-	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, resolve.DecideOptions{})
+	evaluation, err := p.Evaluate(context.Background(), asker)
 	if err != nil {
-		t.Fatalf("Decide: %v", err)
+		t.Fatalf("Evaluate: %v", err)
 	}
-	if got := strings.Join(decision.Argv, " "); got != "ls ." {
-		t.Errorf("argv = %q, want %q: silence must not add a flag", got, "ls .")
+	if evaluation.Stages != 4 {
+		t.Errorf("stages = %d, want the tool stage and three rounds", evaluation.Stages)
+	}
+	if got := strings.Join(evaluation.Flags, " "); got != "-a -l" {
+		t.Errorf("flags = %q, want -a -l", got)
+	}
+	if got := strings.Join(evaluation.Decision.Argv, " "); got != "ls -a -l ." {
+		t.Errorf("argv = %q", got)
 	}
 
-	// And when the user does bring it up, the flag lands.
-	answers["list_directory.hidden?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.93}
-	decision, err = p.Decide(&typesafe.SystemOneResponse{Answers: answers}, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
+	// Each round carries the call built so far, because judging whether it
+	// already satisfies the request is the whole question.
+	if got := fmt.Sprint(asker.requests[1].Questions["satisfied.0"]); !strings.Contains(got, "ls .") {
+		t.Errorf("the first satisfaction question should describe ls ., got %v", got)
 	}
-	if got := strings.Join(decision.Argv, " "); got != "ls -a ." {
-		t.Errorf("argv = %q, want %q once the request mentions hidden entries", got, "ls -a .")
+	if got := fmt.Sprint(asker.requests[2].Questions["satisfied.1"]); !strings.Contains(got, "ls -a .") {
+		t.Errorf("the second should describe ls -a ., got %v", got)
+	}
+}
+
+func TestTheWalkStopsWhenTheCallIsAlreadyEnough(t *testing.T) {
+	p := plan(t)
+	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		stageOne("list_directory", 0.95),
+		{"satisfied.0": noul(0.88), "options.0": choice("-a", 0.9)},
+	}}
+
+	evaluation, err := p.Evaluate(context.Background(), asker)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(evaluation.Flags) != 0 {
+		t.Errorf("flags = %v, want none: the call was already enough", evaluation.Flags)
+	}
+	if got := strings.Join(evaluation.Decision.Argv, " "); got != "ls ." {
+		t.Errorf("argv = %q", got)
+	}
+}
+
+func TestTheWalkStopsAtTheEscapeHatchAndAtTheRoundLimit(t *testing.T) {
+	p := plan(t)
+	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		stageOne("list_directory", 0.95),
+		{"satisfied.0": noul(0.10), "options.0": choice(catalog.NoneKey, 0.85)},
+	}}
+	evaluation, err := p.Evaluate(context.Background(), asker)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(evaluation.Flags) != 0 || evaluation.Rounds != 1 {
+		t.Errorf("flags = %v after %d rounds, want none after one: nothing fits",
+			evaluation.Flags, evaluation.Rounds)
+	}
+
+	// A model that never settles must not turn a call into a conversation.
+	scripted := []map[string]typesafe.Answer{stageOne("list_directory", 0.95)}
+	for round := 0; round < 6; round++ {
+		scripted = append(scripted, map[string]typesafe.Answer{
+			fmt.Sprintf("satisfied.%d", round): noul(0.05),
+			fmt.Sprintf("options.%d", round):   choice("-a", 0.9),
+		})
+	}
+	evaluation, err = p.Evaluate(context.Background(), &scriptedAsker{t: t, scripted: scripted})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if evaluation.Rounds > 3 {
+		t.Errorf("rounds = %d, want the walk bounded at 3", evaluation.Rounds)
+	}
+	if len(evaluation.Flags) > 3 {
+		t.Errorf("flags = %v, want at most one per round", evaluation.Flags)
+	}
+}
+
+func TestAnOptionTheProgramDoesNotDocumentIsIgnored(t *testing.T) {
+	p := plan(t)
+	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		stageOne("list_directory", 0.95),
+		{"satisfied.0": noul(0.10), "options.0": choice("--exec=rm -rf /", 0.99)},
+	}}
+	evaluation, err := p.Evaluate(context.Background(), asker)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(evaluation.Flags) != 0 {
+		t.Errorf("flags = %v, want none: the program documents no such option", evaluation.Flags)
 	}
 }
 
@@ -344,7 +457,7 @@ func TestContentSearchCanBeLimitedToMatchingFiles(t *testing.T) {
 	answers["search_text.files"] = choice("*.go", 0.93)
 	answers["search_text.files?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.91}
 
-	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, resolve.DecideOptions{})
+	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, nil, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -440,8 +553,7 @@ func TestEndToEndThroughTheHTTPClient(t *testing.T) {
 		Probabilities: map[string]float64{"list_directory": 0.93, "search_text": 0.05, catalog.NoneKey: 0.02},
 	}
 	answers["target_path"] = choice(".", 0.99)
-	answers["list_directory.details"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.88}
-	answers["list_directory.details?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.9}
+
 	answers["guardrail.injection"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.01}
 	answers["guardrail.destructive_request"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.02}
 	answers["guardrail.tool_is_clear"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.97}
@@ -467,7 +579,7 @@ func TestEndToEndThroughTheHTTPClient(t *testing.T) {
 		t.Errorf("server saw %d questions, want %d", len(gotRequest.Questions), len(p.Request.Questions))
 	}
 
-	decision, err := p.Decide(result.Response, resolve.DecideOptions{})
+	decision, err := p.Decide(result.Response, []string{"-l"}, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -479,5 +591,22 @@ func TestEndToEndThroughTheHTTPClient(t *testing.T) {
 	}
 	if result.Response.Usage.InputTokens != 900 {
 		t.Errorf("usage did not survive the round trip: %+v", result.Response.Usage)
+	}
+}
+
+// testDocs mirrors the catalog test: the real documentation of the programs
+// whose flags are discovered, so no process is spawned here either.
+func testDocs(t *testing.T) map[string]discover.Docs {
+	t.Helper()
+	read := func(name string) string {
+		raw, err := os.ReadFile("../discover/testdata/" + name)
+		if err != nil {
+			t.Fatalf("fixture %s: %v", name, err)
+		}
+		return string(run.StripOverstrike(raw))
+	}
+	return map[string]discover.Docs{
+		"ls": {Program: "ls", Source: "man", Options: discover.ParseMan(read("man-ls.txt"))},
+		"rg": {Program: "rg", Source: "help", Options: discover.ParseHelp(read("help-rg.txt"))},
 	}
 }

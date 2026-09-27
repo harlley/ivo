@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
 )
 
 // Verdict names, mirroring resolve.Verdict without importing it, so a case file
@@ -124,13 +126,16 @@ func contains(list []string, want string) bool {
 
 // Result is one run of one case.
 type Result struct {
-	Case      Case
-	Outcome   Outcome
-	Failure   string
-	Latency   time.Duration
-	Tokens    int
-	Model     string
-	RequestID string
+	Case    Case
+	Outcome Outcome
+	// Flags and FlagAnswers record what the flag stage decided, for diagnosis.
+	Flags       []string
+	FlagAnswers map[string]typesafe.Answer
+	Failure     string
+	Latency     time.Duration
+	Tokens      int
+	Model       string
+	RequestID   string
 }
 
 // Passed reports whether this single run satisfied the case.

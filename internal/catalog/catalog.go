@@ -19,9 +19,23 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/harlleyoliveira/jev-cli/internal/discover"
 	"github.com/harlleyoliveira/jev-cli/internal/env"
 	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
 )
+
+// maxDiscoveredFlags caps how many of a program's documented options become
+// parameters. The cap is a guard against a program with hundreds of options, not
+// an attempt to pre-select: pre-selecting by keyword does not work, because a
+// manual describes "hidden files" as "names beginning with a dot".
+const maxDiscoveredFlags = 48
+
+// DocumentedFlagThreshold is the probability a discovered option needs before
+// it lands. It is higher than FlagThreshold because dozens of options are asked
+// at once: a question answered on a hunch must not be enough to add a flag
+// nobody asked for, and with many questions in flight a low bar turns small
+// errors into a wrong command line.
+const DocumentedFlagThreshold = 0.6
 
 // Decision thresholds for turning an answer into a parameter value.
 const (
@@ -92,6 +106,10 @@ type Param struct {
 	// nothing". Without it, a question answered on silence can land just above
 	// the threshold and invent a value.
 	Gated bool
+	// Public marks a parameter that came from a program's own documentation,
+	// which is held to a stricter threshold because dozens of them are asked at
+	// once.
+	Public bool
 	// Topic is the subject of the gate question. It defaults to Desc.
 	Topic string
 
@@ -150,6 +168,14 @@ func (p Param) AsQuestion(e *env.Env) typesafe.Question {
 	return typesafe.Choice(p.question(), criteria)
 }
 
+// threshold is how sure the model has to be before this parameter lands.
+func (p Param) threshold() float64 {
+	if p.Public {
+		return DocumentedFlagThreshold
+	}
+	return FlagThreshold
+}
+
 func (p Param) question() string {
 	if p.Question != "" {
 		return p.Question
@@ -194,6 +220,12 @@ type Binding struct {
 	Argv   []string
 	Params []Param
 	Output Output
+	// Discover names the program whose documented options this binding offers.
+	Discover string
+	// Options are the boolean options that program documents, in its own order.
+	// They are chosen in a stage of their own, once the tool is known, so the
+	// question only ever lists the flags of the tool that won.
+	Options []discover.Option
 }
 
 // Validate catches catalog mistakes at test time rather than in production:
@@ -213,6 +245,11 @@ func (b Binding) Validate(tool string) error {
 		seen[param.Name] = true
 	}
 	for _, tok := range b.Argv {
+		if tok == FlagsPlaceholder {
+			// The options chosen in the flag stage land here, and they are
+			// validated against the option list when the call is filled.
+			continue
+		}
 		name, ok := placeholder(tok)
 		if !ok {
 			continue
@@ -250,11 +287,130 @@ type Tool struct {
 	ReadOnly bool
 	// Needs lists binaries the tool cannot run without.
 	Needs []string
+	// Document names the programs whose documentation this tool's parameters
+	// are built from, so the probe can read them before the binding is built.
+	Document []string
 
 	// Bind produces the command line binding, or ok=false when the tool is
 	// unavailable here (missing binaries, wrong platform).
 	Bind func(*env.Env) (Binding, bool)
 }
+
+// Documented returns every program any of these tools builds parameters from.
+func Documented(tools []Tool) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, tool := range tools {
+		for _, program := range tool.Document {
+			if seen[program] {
+				continue
+			}
+			seen[program] = true
+			out = append(out, program)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// FlagsPlaceholder is where the options chosen in the flag stage land in a
+// binding's template.
+const FlagsPlaceholder = "{flags}"
+
+// DocumentedOptions reads the boolean options a program documents about itself.
+// This is what removes the need to catalogue a tool's capabilities by hand: the
+// flag surface comes from the manual.
+func DocumentedOptions(e *env.Env, program string) []discover.Option {
+	docs, ok := e.Docs[program]
+	if !ok {
+		return nil
+	}
+	return discover.Flags(docs, maxDiscoveredFlags)
+}
+
+// OptionQuestion asks which option to add to the call built so far.
+//
+// It is a Choice over the options the program documents, minus the ones already
+// chosen, rather than one yes/no question per option. Two reasons, both learned
+// by measuring: asking about every flag of every tool at once drowns the
+// decision in noise, and choosing from a list is the shape the model is good
+// at, because it only has to compare the request against documented purposes.
+func OptionQuestion(options []discover.Option, already []string, round int) typesafe.Question {
+	chosen := map[string]bool{}
+	for _, flag := range already {
+		chosen[flag] = true
+	}
+	criteria := map[string]any{}
+	for _, option := range options {
+		if len(option.Flags) == 0 || chosen[option.Flags[0]] {
+			continue
+		}
+		key := option.Flags[0]
+		desc := discover.FirstSentence(option.Desc)
+		if len(option.Flags) > 1 {
+			desc = strings.Join(option.Flags, ", ") + ": " + desc
+		}
+		criteria[key] = desc
+	}
+	// What is already chosen is part of the question, so the model can avoid
+	// adding an option that a chosen one already covers. Manuals describe
+	// overlapping options without saying so: ls documents -a and -A separately
+	// and both include the dot files.
+	instructions := map[string]any{
+		"question": "Which of these options should be added to the call so far?",
+	}
+	if len(already) > 0 {
+		chosen := make([]string, 0, len(already))
+		for _, flag := range already {
+			chosen = append(chosen, describeOption(options, flag))
+		}
+		instructions["already_chosen"] = chosen
+		instructions["note"] = "Do not add an option that one of `already_chosen` already covers."
+	}
+	if round > 0 {
+		instructions["question"] = "The call so far still does not satisfy the request. Which of these further options should be added?"
+	}
+	return typesafe.Choice(instructions, criteria)
+}
+
+// describeOption renders one option the way the question refers to it.
+func describeOption(options []discover.Option, flag string) string {
+	for _, option := range options {
+		if len(option.Flags) > 0 && option.Flags[0] == flag {
+			return flag + " (" + discover.FirstSentence(option.Desc) + ")"
+		}
+	}
+	return flag
+}
+
+// SatisfiedQuestion asks whether the call built so far already answers the
+// request. It is the stopping condition of the walk: without it the model would
+// keep adding options, and with it the walk ends as soon as the call is enough.
+//
+// The candidate is passed as structured data and referred to by name, so the
+// question itself stays short and stable across rounds.
+func SatisfiedQuestion(candidate string) typesafe.Question {
+	return typesafe.Noul(
+		map[string]any{
+			"candidate": candidate,
+			"question":  "Does `candidate` satisfy the request, as it stands?",
+			"focus":     "Judge whether the call already does what the request asks for, without adding anything.",
+		},
+		&typesafe.NoulCriteria{
+			True:  "`candidate` already does what the request asks for.",
+			False: "`candidate` is still missing something the request asks for.",
+		},
+	)
+}
+
+// SatisfiedThreshold is the probability at which the call built so far counts
+// as answering the request.
+const SatisfiedThreshold = 0.5
+
+// SatisfiedQuestionID and OptionQuestionID are the ids of one round's two
+// questions.
+func SatisfiedQuestionID(round int) string { return fmt.Sprintf("satisfied.%d", round) }
+func OptionQuestionID(round int) string    { return fmt.Sprintf("options.%d", round) }
 
 // Available returns the tools that can run here and that have a real decision
 // to make in this environment.
@@ -404,7 +560,7 @@ type filled struct {
 // Fill reads only the answers belonging to the chosen tool and binds them to a
 // command line. Every token comes from a value this repository authored, or
 // from a path env confirmed exists.
-func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, e *env.Env) (Result, error) {
+func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, flags []string, e *env.Env) (Result, error) {
 	if err := binding.Validate(tool.Name); err != nil {
 		return Result{}, err
 	}
@@ -455,7 +611,7 @@ func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, e *env
 			}
 			f.resolved = true
 			f.weight = answer.Noul
-			if answer.Noul >= FlagThreshold {
+			if answer.Noul >= param.threshold() {
 				f.tokens = param.Argv
 				f.value = true
 			} else {
@@ -500,10 +656,30 @@ func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, e *env
 		call.Args[f.param.Name] = f.value
 	}
 
+	// The options chosen in the flag stage are validated against the option
+	// list the program documented, which is the closed set for this position.
+	allowedFlags := map[string]bool{}
+	for _, option := range binding.Options {
+		if len(option.Flags) > 0 {
+			allowedFlags[option.Flags[0]] = true
+		}
+	}
+	var chosenFlags []string
+	for _, flag := range flags {
+		if !allowedFlags[flag] {
+			return Result{}, fmt.Errorf("catalog: %q is not an option %s documents", flag, binding.Discover)
+		}
+		chosenFlags = append(chosenFlags, flag)
+	}
+
 	// Bind: a placeholder contributes zero or more whole tokens, a literal
 	// contributes itself.
 	argv := make([]string, 0, len(binding.Argv)+4)
 	for _, tok := range binding.Argv {
+		if tok == FlagsPlaceholder {
+			argv = append(argv, chosenFlags...)
+			continue
+		}
 		name, isPlaceholder := placeholder(tok)
 		if !isPlaceholder {
 			if tok != "" {

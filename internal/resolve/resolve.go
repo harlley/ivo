@@ -8,8 +8,10 @@
 package resolve
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/harlleyoliveira/jev-cli/internal/catalog"
 	"github.com/harlleyoliveira/jev-cli/internal/env"
@@ -135,6 +137,187 @@ func nonNil(list []string) []string {
 	return list
 }
 
+// maxOptionRounds bounds the walk over a tool's options. Each round costs one
+// request, so the bound is what keeps a call from turning into a conversation.
+//
+// The last round exists to verify rather than to add: without it a call that
+// needs two options ends on an option nobody checked, which is how ls once came
+// back as -a -A -l for a request that wanted two of the three.
+const maxOptionRounds = 4
+
+// Asker sends one request. *typesafe.Client satisfies it, and so does a script
+// in a test, which is how the whole walk is covered without a network.
+type Asker interface {
+	SystemOne(ctx context.Context, request typesafe.SystemOneRequest) (*typesafe.Result, error)
+}
+
+// askFunc sends one request and hands back just the response.
+type askFunc func(typesafe.SystemOneRequest) (*typesafe.SystemOneResponse, error)
+
+// Evaluation is the outcome of a whole call: every stage, what it cost, and what
+// was decided.
+type Evaluation struct {
+	Decision *Decision
+	Usage    typesafe.Usage
+	Latency  time.Duration
+	// Stages is how many requests the call needed.
+	Stages int
+	// Model is the model that answered.
+	Model string
+	// Flags are the options the walk settled on, and Rounds is how many
+	// requests it took to settle.
+	Flags  []string
+	Rounds int
+	// FlagAnswers is what each round answered, kept for diagnosis: when a call
+	// misses the option it needed, this is where to look.
+	FlagAnswers map[string]typesafe.Answer
+}
+
+// Evaluate runs the stages a call needs. The tool is chosen first, and only
+// then are its own documented options walked, one round at a time: each round
+// asks whether the call built so far already answers the request, and if not,
+// which option to add next. Both questions ride in the same request, so a round
+// costs one round trip whatever the answer turns out to be.
+func (p *Plan) Evaluate(ctx context.Context, client Asker) (*Evaluation, error) {
+	first, err := client.SystemOne(ctx, p.Request)
+	if err != nil {
+		return nil, err
+	}
+	evaluation := &Evaluation{
+		Usage:   first.Response.Usage,
+		Latency: first.Latency,
+		Stages:  1,
+		Model:   first.Response.Model,
+	}
+
+	toolName := chosenTool(first.Response)
+	if toolName != "" {
+		rounds, flags, answers, err := p.walkOptions(toolName, first.Response.Answers, func(request typesafe.SystemOneRequest) (*typesafe.SystemOneResponse, error) {
+			result, err := client.SystemOne(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			evaluation.Usage.InputTokens += result.Response.Usage.InputTokens
+			evaluation.Usage.OutputTokens += result.Response.Usage.OutputTokens
+			evaluation.Latency += result.Latency
+			evaluation.Stages++
+			return result.Response, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		evaluation.Rounds = rounds
+		evaluation.Flags = flags
+		evaluation.FlagAnswers = answers
+	}
+
+	decision, err := p.Decide(first.Response, evaluation.Flags, DecideOptions{})
+	if err != nil {
+		return nil, err
+	}
+	evaluation.Decision = decision
+	return evaluation, nil
+}
+
+// walkOptions is the recursion: list the options that are left, ask whether the
+// call so far already satisfies the request, and add one more if it does not.
+// It stops at the first yes, at the escape hatch, or at the round limit.
+func (p *Plan) walkOptions(toolName string, operands map[string]typesafe.Answer, ask askFunc) (int, []string, map[string]typesafe.Answer, error) {
+	binding, ok := p.Bindings[toolName]
+	if !ok || len(binding.Options) == 0 {
+		return 0, nil, nil, nil
+	}
+
+	var flags []string
+	answers := map[string]typesafe.Answer{}
+
+	for round := 0; round < maxOptionRounds; round++ {
+		request := typesafe.SystemOneRequest{
+			State: p.Request.State,
+			Model: p.Request.Model,
+			Questions: map[string]any{
+				catalog.SatisfiedQuestionID(round): catalog.SatisfiedQuestion(p.candidate(toolName, binding, operands, flags)),
+				catalog.OptionQuestionID(round):    catalog.OptionQuestion(binding.Options, flags, round),
+			},
+		}
+		response, err := ask(request)
+		if err != nil {
+			return round, flags, answers, err
+		}
+		rounds := round + 1
+
+		for id, answer := range response.Answers {
+			answers[id] = answer
+		}
+
+		// The call is enough: the option answer, if any, is ignored, which is
+		// the point of asking both in one request.
+		if answer, ok := response.Answers[catalog.SatisfiedQuestionID(round)]; ok && answer.Noul >= catalog.SatisfiedThreshold {
+			return rounds, flags, answers, nil
+		}
+
+		next, ok := nextOption(response.Answers, binding, flags, round)
+		if !ok {
+			return rounds, flags, answers, nil
+		}
+		flags = append(flags, next)
+	}
+	return maxOptionRounds, flags, answers, nil
+}
+
+// candidate renders the call built so far, so the model can judge it. Rendering
+// is best effort: an operand that is not filled yet simply leaves the call
+// described by its program and options.
+func (p *Plan) candidate(toolName string, binding catalog.Binding, operands map[string]typesafe.Answer, flags []string) string {
+	tool, ok := p.tool(toolName)
+	if !ok {
+		return toolName
+	}
+	filled, err := catalog.Fill(*tool, binding, operands, flags, p.Env)
+	if err != nil || len(filled.Argv) == 0 {
+		return strings.Join(append([]string{binding.Argv[0]}, flags...), " ")
+	}
+	return strings.Join(filled.Argv, " ")
+}
+
+// nextOption reads one round's option answer, skipping anything the program
+// does not document and anything already chosen.
+func nextOption(answers map[string]typesafe.Answer, binding catalog.Binding, flags []string, round int) (string, bool) {
+	answer, ok := answers[catalog.OptionQuestionID(round)]
+	if !ok || answer.Choice == catalog.NoneKey {
+		return "", false
+	}
+	documented := false
+	for _, option := range binding.Options {
+		if len(option.Flags) > 0 && option.Flags[0] == answer.Choice {
+			documented = true
+			break
+		}
+	}
+	if !documented {
+		return "", false
+	}
+	for _, flag := range flags {
+		if flag == answer.Choice {
+			return "", false
+		}
+	}
+	return answer.Choice, true
+}
+
+// chosenTool reads the tool the first stage picked, or "" when the answer was
+// the escape hatch.
+
+// chosenTool reads the tool the first stage picked, or "" when the answer was
+// the escape hatch or an id the catalog does not know.
+func chosenTool(response *typesafe.SystemOneResponse) string {
+	answer, ok := response.Answers["intent"]
+	if !ok || answer.Choice == catalog.NoneKey {
+		return ""
+	}
+	return answer.Choice
+}
+
 // Verdict is what jev-cli decided to do about a phrase.
 type Verdict string
 
@@ -202,7 +385,7 @@ func (o DecideOptions) withDefaults() DecideOptions {
 // Decide reads the answers. The order of the checks is the order of the
 // questions that matter: first "should anything run at all", then "which
 // command", then "did every argument resolve".
-func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Decision, error) {
+func (p *Plan) Decide(res *typesafe.SystemOneResponse, flags []string, opts DecideOptions) (*Decision, error) {
 	opts = opts.withDefaults()
 
 	intent, ok := res.Answers["intent"]
@@ -292,7 +475,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 		return d, nil
 	}
 
-	filled, err := catalog.Fill(*tool, p.Bindings[tool.Name], res.Answers, p.Env)
+	filled, err := catalog.Fill(*tool, p.Bindings[tool.Name], res.Answers, flags, p.Env)
 	if err != nil {
 		if d.Verdict == VerdictAct {
 			return nil, err
