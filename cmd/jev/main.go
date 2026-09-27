@@ -143,6 +143,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	outcome, err := run.Do(ctx, decision.Argv, run.Options{
 		Execute: true,
 		Allow:   catalog.Allowlist(plan.Bindings, systemEnv),
+		Filter:  outputFilter(decision.Output),
 		Stdin:   os.Stdin,
 		Stdout:  stdout,
 		Stderr:  stderr,
@@ -152,6 +153,15 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 	return outcome.ExitCode
+}
+
+// outputFilter maps a binding's declared output adaptation onto the function
+// that performs it. The catalog says what the output needs; run knows how.
+func outputFilter(kind catalog.Output) func([]byte) []byte {
+	if kind == catalog.OutputStripOverstrike {
+		return run.StripOverstrike
+	}
+	return nil
 }
 
 // baseURL is the API host. It is an environment variable rather than a flag so

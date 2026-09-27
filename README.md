@@ -207,9 +207,14 @@ search_text
 `--tools` needs no key and no network: it is the layer describing itself, and it
 ends with the `man` or `--help` command to read the underlying program. When a
 phrase needs the documentation itself, `read_manual` turns that into a call, for
-example `man -P cat rg`. The pager is overridden on purpose: `man` on a terminal
-would open one and wait for input, which is exactly the interactive trap a tool
-call must not fall into.
+example `man -P cat rg`.
+
+Two details there are the binding's job rather than the model's. The pager is
+overridden, because `man` on a terminal would open one and wait for input, which
+is exactly the interactive trap a tool call must not fall into. And the output
+is adapted, because `man` formats for a terminal: it writes bold as "X backspace
+X", so the binding declares `OutputStripOverstrike` and the page arrives as
+plain text. The catalog says what the output needs, `run` knows how to do it.
 
 What this deliberately does *not* do is derive the parameters from `man`
 automatically. `ls` alone has around fifty flags, and enumerating them would

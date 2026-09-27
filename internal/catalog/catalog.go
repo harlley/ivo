@@ -175,11 +175,25 @@ func (p Param) GateQuestion() typesafe.Question {
 	)
 }
 
+// Output is how a program's output has to be adapted before it reaches the
+// terminal. A few programs format for a terminal rather than for a reader, and
+// flattening that is the binding's job, never the model's.
+type Output int
+
+const (
+	// OutputRaw passes the program's output through untouched.
+	OutputRaw Output = iota
+	// OutputStripOverstrike drops the backspace overstrikes a terminal
+	// formatter writes for bold and underline, which man does.
+	OutputStripOverstrike
+)
+
 // Binding is a tool's command line template plus the parameters that fill it.
 // Placeholders are whole tokens of the form "{param_name}".
 type Binding struct {
 	Argv   []string
 	Params []Param
+	Output Output
 }
 
 // Validate catches catalog mistakes at test time rather than in production:
@@ -365,6 +379,8 @@ type Result struct {
 	Argv     []string
 	Notes    []Note
 	Unfilled []string
+	// Output is how the bound program's output has to be adapted.
+	Output Output
 }
 
 type filled struct {
@@ -506,7 +522,7 @@ func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, e *env
 		}
 	}
 
-	return Result{Call: call, Argv: argv, Notes: notes, Unfilled: unfilled}, nil
+	return Result{Call: call, Argv: argv, Notes: notes, Unfilled: unfilled, Output: binding.Output}, nil
 }
 
 func describe(f filled) string {

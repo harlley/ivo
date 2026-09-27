@@ -71,8 +71,14 @@ func TestEveryToolBindsAndValidates(t *testing.T) {
 	}
 	// read_manual is the layer documenting itself, so it must be able to talk
 	// about the programs the other tools use.
-	if _, ok := bindings["read_manual"]; !ok {
-		t.Error("read_manual has no binding")
+	manual, ok := bindings["read_manual"]
+	if !ok {
+		t.Fatal("read_manual has no binding")
+	}
+	// man formats for a terminal, so the binding has to say that its output
+	// needs adapting. Without it the manual arrives as "N backspace N".
+	if manual.Output != catalog.OutputStripOverstrike {
+		t.Errorf("read_manual output = %v, want OutputStripOverstrike", manual.Output)
 	}
 }
 

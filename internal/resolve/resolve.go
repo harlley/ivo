@@ -159,6 +159,7 @@ type Decision struct {
 
 	Tool     *catalog.Tool
 	Argv     []string
+	Output   catalog.Output
 	Notes    []catalog.Note
 	Unfilled []string
 
@@ -303,6 +304,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 	d.Tool = tool
 	d.Notes = filled.Notes
 	d.Unfilled = filled.Unfilled
+	d.Output = filled.Output
 
 	if d.Verdict != VerdictAct {
 		// Only an ask shows a suggestion. An unsupported verdict means the

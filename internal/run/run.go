@@ -29,6 +29,10 @@ type Options struct {
 	Capture bool
 	// MaxOutputBytes bounds the captured output.
 	MaxOutputBytes int
+	// Filter transforms the program's output before it is written. When it is
+	// set the output is captured rather than streamed, because a filter cannot
+	// see what it has not read.
+	Filter func([]byte) []byte
 
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -82,8 +86,10 @@ func Do(ctx context.Context, argv []string, opts Options) (Outcome, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = opts.Stdin
 
+	capture := opts.Capture || opts.Filter != nil
+
 	var stdout, stderr *limitedBuffer
-	if opts.Capture {
+	if capture {
 		limit := opts.MaxOutputBytes
 		if limit <= 0 {
 			limit = DefaultMaxOutputBytes
@@ -97,6 +103,10 @@ func Do(ctx context.Context, argv []string, opts Options) (Outcome, error) {
 	err := cmd.Run()
 
 	out := Outcome{Ran: true}
+	if opts.Filter != nil && stdout != nil {
+		fmt.Fprint(opts.Stdout, string(opts.Filter([]byte(stdout.String()))))
+		stdout.buf.Reset()
+	}
 	if stdout != nil {
 		out.Stdout, out.Truncated = stdout.String(), stdout.truncated
 	}
@@ -122,6 +132,33 @@ func Do(ctx context.Context, argv []string, opts Options) (Outcome, error) {
 		}
 		return out, fmt.Errorf("run: %w", err)
 	}
+}
+
+// StripOverstrike turns the "X backspace X" sequences a terminal formatter
+// writes for bold and underline into plain text, and collapses the doubled
+// characters of the simpler "XX" form. It is what makes a manual page readable
+// when the reader is not a terminal.
+func StripOverstrike(in []byte) []byte {
+	out := make([]byte, 0, len(in))
+	for i := 0; i < len(in); i++ {
+		if in[i] != 0x08 {
+			out = append(out, in[i])
+			continue
+		}
+		// A backspace erases the character before it. Overstrike is the two
+		// character form, "X backspace X", where the second character replaces
+		// the first; a backspace at the end is a plain erase.
+		if len(out) == 0 {
+			continue
+		}
+		if i+1 < len(in) {
+			out[len(out)-1] = in[i+1]
+			i++
+			continue
+		}
+		out = out[:len(out)-1]
+	}
+	return out
 }
 
 // limitedBuffer keeps the first N bytes and remembers that it dropped the rest.

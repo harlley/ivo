@@ -113,3 +113,47 @@ func TestMissingProgramIsAnError(t *testing.T) {
 		t.Fatal("expected an error for a missing program")
 	}
 }
+
+func TestStripOverstrike(t *testing.T) {
+	// What a terminal formatter writes for bold: each character twice, with a
+	// backspace between. Underline does the same with an underscore first.
+	bold := "N\bNA\bAM\bME\bE"
+	doubled := "NNAAMMEE"
+	underlined := "_\bx_\by"
+	mixed := "plain " + bold + " tail\n"
+
+	cases := []struct{ in, want string }{
+		{bold, "NAME"},
+		{doubled, "NNAAMMEE"}, // the doubled form is not overstrike, leave it alone
+		{underlined, "xy"},
+		{mixed, "plain NAME tail\n"},
+		{"", ""},
+		{"\b", ""},                // an erase with nothing to erase
+		{"trailing\b", "trailin"}, // an erase at the end takes the last character
+		{"a\bb", "b"},
+	}
+	for _, tc := range cases {
+		if got := string(StripOverstrike([]byte(tc.in))); got != tc.want {
+			t.Errorf("StripOverstrike(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFilterAdaptsTheOutput(t *testing.T) {
+	var stdout bytes.Buffer
+	outcome, err := Do(context.Background(), []string{"echo", "-n", "N\bNA\bAM\bME\bE"}, Options{
+		Execute: true,
+		Allow:   []string{"echo"},
+		Filter:  StripOverstrike,
+		Stdout:  &stdout,
+	})
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if !outcome.Ran {
+		t.Fatal("the command should have run")
+	}
+	if got := stdout.String(); got != "NAME" {
+		t.Errorf("filtered output = %q, want %q", got, "NAME")
+	}
+}

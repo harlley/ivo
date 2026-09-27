@@ -290,7 +290,8 @@ func readManual() Tool {
 		Needs:    []string{"man"},
 		Bind: func(e *env.Env) (Binding, bool) {
 			return Binding{
-				Argv: []string{"man", "-P", "cat", "{program}"},
+				Argv:   []string{"man", "-P", "cat", "{program}"},
+				Output: OutputStripOverstrike,
 				Params: []Param{
 					{
 						Kind:     ChoiceParam,
