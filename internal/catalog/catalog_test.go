@@ -82,10 +82,12 @@ func answersFor(spec catalog.Spec, cmdID string, e *env.Env) map[string]typesafe
 		qid := slot.QuestionID(cmdID)
 		if slot.IsFlag() {
 			out[qid] = noul(0)
-			continue
+		} else {
+			out[qid] = choice(firstKey(slot, e), 1)
 		}
-		out[qid] = choice(firstKey(slot, e), 1)
-		if slot.Optional {
+		if slot.Stated {
+			// "The user said nothing about this", so the declared default
+			// stands. Individual tests override this to exercise the gate.
 			out[qid+"?"] = noul(0)
 		}
 	}
@@ -159,8 +161,10 @@ func TestFlagsAreOptIn(t *testing.T) {
 func TestFlagsAreAddedWhenTheUserAsksForThem(t *testing.T) {
 	e := testEnv()
 	got := assemble(t, e, "list_directory", map[string]typesafe.Answer{
-		"list_directory.ls_hidden": noul(0.91),
-		"list_directory.ls_long":   noul(0.88),
+		"list_directory.ls_hidden":  noul(0.91),
+		"list_directory.ls_hidden?": noul(0.95),
+		"list_directory.ls_long":    noul(0.88),
+		"list_directory.ls_long?":   noul(0.90),
 	})
 	if strings.Join(got.Argv, " ") != "ls -a -l ." {
 		t.Errorf("argv = %q", got.Argv)
@@ -170,8 +174,10 @@ func TestFlagsAreAddedWhenTheUserAsksForThem(t *testing.T) {
 func TestMutuallyExclusiveFlagsNeverBothLand(t *testing.T) {
 	e := testEnv()
 	got := assemble(t, e, "list_directory", map[string]typesafe.Answer{
-		"list_directory.ls_sort_time": noul(0.70),
-		"list_directory.ls_sort_size": noul(0.90),
+		"list_directory.ls_sort_time":  noul(0.70),
+		"list_directory.ls_sort_time?": noul(0.85),
+		"list_directory.ls_sort_size":  noul(0.90),
+		"list_directory.ls_sort_size?": noul(0.92),
 	})
 	if strings.Join(got.Argv, " ") != "ls -S ." {
 		t.Errorf("argv = %q, want only the stronger sort flag", got.Argv)
@@ -399,11 +405,17 @@ func answerCombos(spec catalog.Spec, cmdID string, e *env.Env) []map[string]type
 
 		switch {
 		case slot.IsFlag():
-			variants = []map[string]typesafe.Answer{
-				{qid: noul(0)},
-				{qid: noul(1)},
+			if slot.Stated {
+				variants = []map[string]typesafe.Answer{
+					{qid: noul(0), qid + "?": noul(0)},
+					{qid: noul(1), qid + "?": noul(0)},
+					{qid: noul(0), qid + "?": noul(1)},
+					{qid: noul(1), qid + "?": noul(1)},
+				}
+			} else {
+				variants = []map[string]typesafe.Answer{{qid: noul(0)}, {qid: noul(1)}}
 			}
-		case slot.Optional:
+		case slot.Stated:
 			anyOption := catalog.NoneKey
 			for _, opt := range optionsOf(slot, e) {
 				anyOption = opt.Key

@@ -73,11 +73,13 @@ type Slot struct {
 	Options    []Value
 	OptionsFor func(*env.Env) []Value
 
-	// Optional marks a selection slot as "only if the user said something".
+	// Stated gates a slot behind a "did the user say anything about this?"
+	// question. It applies to flags as well as to selections: it is what
+	// separates "the user wants hidden files" from "the user said nothing".
 	// It adds a "<qid>?" noul question, and Topic describes what that question
 	// is about.
-	Optional bool
-	Topic    string
+	Stated bool
+	Topic  string
 	// Default is the option key used when an optional slot is not stated, or
 	// when the answer is the escape hatch.
 	Default string
@@ -289,7 +291,7 @@ func Specs(cmds []Command, e *env.Env) map[string]Spec {
 // that cannot be decided here is simply not offered.
 func (s Spec) usable(e *env.Env) bool {
 	for _, slot := range s.Slots {
-		if slot.IsFlag() || slot.Optional {
+		if slot.IsFlag() {
 			continue
 		}
 		if len(slot.options(e)) < 2 {
@@ -339,7 +341,7 @@ func Questions(cmds []Command, specs map[string]Spec, e *env.Env) map[string]typ
 				continue
 			}
 			out[qid] = slot.AsQuestion(e)
-			if slot.Optional && !slot.IsFlag() {
+			if slot.Stated {
 				out[qid+"?"] = slot.StatedQuestion()
 			}
 		}
@@ -373,6 +375,9 @@ type evaluated struct {
 	answered   bool
 	weight     float64
 	suppressed string
+	// unstated records that the user said nothing about this slot, so the
+	// note can say so instead of pretending the model decided.
+	unstated bool
 }
 
 // Assemble reads only the answers belonging to the winning command and expands
@@ -406,12 +411,37 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 		answer, ok := answers[qid]
 		if !ok {
 			// A required slot with no answer is a hole we cannot paper over.
-			if !slot.Optional {
+			if !slot.Stated {
 				return Assembled{}, fmt.Errorf("catalog: no answer for %q", qid)
 			}
 		}
 		ev.answer = answer
 		ev.answered = ok
+
+		// The "did the user say anything about this?" gate comes first, for
+		// flags and selections alike. Without it, a flag question answered on
+		// silence lands just above the threshold and adds a flag nobody asked
+		// for (the real model answers 0.52 for "liste todos os arquivos desse
+		// diretório" — enough to add -a). With it, silence means the declared
+		// default stands and the flag is left off.
+		if slot.Stated {
+			statedQID := qid + "?"
+			stated, ok := answers[statedQID]
+			if !ok {
+				return Assembled{}, fmt.Errorf("catalog: no answer for %q", statedQID)
+			}
+			if stated.Noul < StatedThreshold {
+				ev.weight = stated.Noul
+				ev.unstated = true
+				if !slot.IsFlag() {
+					if val, found := findValue(slot.options(e), slot.Default); found {
+						ev.tokens = val.Argv
+					}
+				}
+				evaluatedSlots = append(evaluatedSlots, ev)
+				continue
+			}
+		}
 
 		switch {
 		case slot.IsFlag():
@@ -423,23 +453,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 				ev.tokens = slot.trueArgv(cmd.ID)
 			}
 
-		case slot.Optional:
-			statedQID := qid + "?"
-			stated, ok := answers[statedQID]
-			if !ok {
-				return Assembled{}, fmt.Errorf("catalog: no answer for %q", statedQID)
-			}
-			if stated.Noul < StatedThreshold {
-				// The user said nothing about this argument, so the declared
-				// default option stands — including the tokens it carries.
-				// This is what keeps a Choice from confidently inventing a
-				// value the request never mentioned.
-				ev.weight = stated.Noul
-				if val, found := findValue(slot.options(e), slot.Default); found {
-					ev.tokens = val.Argv
-				}
-				break
-			}
+		case slot.Stated:
 			ev.weight = answer.Confidence
 			val, found := findValue(slot.options(e), answer.Choice)
 			if !found {
@@ -526,7 +540,7 @@ func Assemble(cmd Command, spec Spec, answers map[string]typesafe.Answer, e *env
 			Detail:   describe(ev),
 		}
 		notes = append(notes, note)
-		if len(ev.tokens) == 0 && !ev.slot.Optional && !ev.slot.IsFlag() {
+		if len(ev.tokens) == 0 && !ev.slot.Stated && !ev.slot.IsFlag() {
 			missing = append(missing, ev.slot.ID)
 		}
 	}
@@ -564,16 +578,21 @@ func describe(ev evaluated) string {
 	switch {
 	case ev.suppressed != "":
 		return fmt.Sprintf("omitido: conflita com %s", ev.suppressed)
+	case ev.unstated && ev.slot.IsFlag():
+		if len(ev.tokens) > 0 {
+			return fmt.Sprintf("incluído: padrão (não mencionado, p=%.2f)", ev.weight)
+		}
+		return fmt.Sprintf("omitido: não mencionado (p=%.2f)", ev.weight)
+	case ev.unstated:
+		if len(ev.tokens) == 0 {
+			return fmt.Sprintf("omitido: não mencionado (p=%.2f)", ev.weight)
+		}
+		return fmt.Sprintf("padrão %s: não mencionado (p=%.2f)", strings.Join(ev.tokens, " "), ev.weight)
 	case ev.slot.IsFlag():
 		if len(ev.tokens) > 0 {
 			return fmt.Sprintf("incluído (p=%.2f)", ev.answer.Noul)
 		}
 		return fmt.Sprintf("omitido (p=%.2f)", ev.answer.Noul)
-	case ev.slot.Optional:
-		if len(ev.tokens) == 0 {
-			return fmt.Sprintf("omitido: não mencionado (p=%.2f)", ev.weight)
-		}
-		return fmt.Sprintf("%s (confiança %.2f)", strings.Join(ev.tokens, " "), ev.answer.Confidence)
 	case len(ev.tokens) == 0:
 		if ev.answer.Choice == NoneKey {
 			return "não resolvido: nenhuma opção serve"

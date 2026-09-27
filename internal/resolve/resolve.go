@@ -100,7 +100,7 @@ func Build(e *env.Env, opts Options) (*Plan, error) {
 			question := slot.AsQuestion(e)
 			questions[qid] = question
 			labels[qid] = criteriaLabels(question)
-			if slot.Optional && !slot.IsFlag() {
+			if slot.Stated {
 				questions[qid+"?"] = slot.StatedQuestion()
 			}
 		}
@@ -294,27 +294,37 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 
 	// 3. Intent. The escape hatch carries real signal: a first place that is
 	//    barely ahead of "none of these" is not a decision.
+	//
+	//    A gate below this line does not end the work: the command is still
+	//    resolved so the CLI can show the user its best reading of the phrase.
+	//    Seeing "eu ia rodar git diff -- ." is what makes an ask actionable
+	//    instead of a dead end. That suggestion is display-only — every caller
+	//    executes on VerdictAct and nothing else.
 	noneProbability := intent.Probability(catalog.NoneKey)
-	if intent.Choice == catalog.NoneKey || noneProbability >= noneActionThreshold {
+	switch {
+	case intent.Choice == catalog.NoneKey || noneProbability >= noneActionThreshold:
 		d.Verdict = VerdictUnsupported
 		d.Reason = fmt.Sprintf("nenhum comando do catálogo corresponde ao pedido (p=%.2f para \"nenhum\")", noneProbability)
-		return d, nil
-	}
-	if intent.Confidence < opts.MinConfidence {
+	case intent.Confidence < opts.MinConfidence:
 		d.Verdict = VerdictAsk
 		d.Reason = fmt.Sprintf("não tenho certeza de qual comando usar (confiança %.2f, mínimo %.2f)",
 			intent.Confidence, opts.MinConfidence)
-		return d, nil
-	}
-	if clarity := d.Guardrails["guardrail.intent_clear"].Noul; clarity < opts.ClarityThreshold {
-		d.Verdict = VerdictAsk
-		d.Reason = fmt.Sprintf("o pedido é ambíguo demais para executar sem confirmação (clareza p=%.2f)", clarity)
-		return d, nil
+	default:
+		if clarity := d.Guardrails["guardrail.intent_clear"].Noul; clarity < opts.ClarityThreshold {
+			d.Verdict = VerdictAsk
+			d.Reason = fmt.Sprintf("o pedido é ambíguo demais para executar sem confirmação (clareza p=%.2f)", clarity)
+		} else {
+			d.Verdict = VerdictAct
+		}
 	}
 
 	cmd, found := p.command(intent.Choice)
 	if !found {
-		return nil, fmt.Errorf("o modelo escolheu %q, que não está no catálogo", intent.Choice)
+		if d.Verdict == VerdictAct {
+			return nil, fmt.Errorf("o modelo escolheu %q, que não está no catálogo", intent.Choice)
+		}
+		// The escape hatch won, so there is no command to offer.
+		return d, nil
 	}
 	if !cmd.ReadOnly && !opts.AllowWrite {
 		d.Verdict = VerdictBlocked
@@ -324,12 +334,24 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 
 	assembled, err := catalog.Assemble(*cmd, p.Specs[cmd.ID], res.Answers, p.Env, p.Forced)
 	if err != nil {
-		return nil, err
+		if d.Verdict == VerdictAct {
+			return nil, err
+		}
+		// We were only going to show a suggestion; failing to build one is
+		// not worth failing the whole command over.
+		return d, nil
 	}
 	d.Command = cmd
-	d.Argv = assembled.Argv
 	d.Notes = assembled.Notes
 	d.Missing = assembled.Missing
+
+	if d.Verdict != VerdictAct {
+		// Never hand over a half-resolved command, even as a suggestion.
+		if len(assembled.Missing) == 0 {
+			d.Argv = assembled.Argv
+		}
+		return d, nil
+	}
 
 	if len(assembled.Missing) > 0 {
 		d.Verdict = VerdictAsk
@@ -344,6 +366,7 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, opts DecideOptions) (*Dec
 		return nil, fmt.Errorf("o comando resolvido ficou vazio")
 	}
 
+	d.Argv = assembled.Argv
 	d.Verdict = VerdictAct
 	return d, nil
 }

@@ -288,6 +288,16 @@ func extractCandidates(request, cwd, home string) Candidates {
 		addPattern(g)
 	}
 
+	// 4b. Words that name a kind of file: "arquivos go" -> "*.go". The
+	//     extension may not exist in this directory yet, and that is fine —
+	//     the user asked for it, and the model can reject the option.
+	for _, tok := range strings.Fields(request) {
+		word := strings.ToLower(strings.Trim(tok, "\"'`.,;:!?()[]{}<>"))
+		if ext, ok := extensionWords[word]; ok {
+			addPattern("*" + ext)
+		}
+	}
+
 	// 5. Fallback: content words. Over-finding is deliberate. The model's job
 	//    is to pick the right one, and a word it was never offered is a word it
 	//    cannot pick — but a short option list that omits the answer entirely
@@ -304,6 +314,19 @@ func extractCandidates(request, cwd, home string) Candidates {
 	}
 
 	return Candidates{Paths: paths, Patterns: patterns, Terms: terms}
+}
+
+// extensionWords maps a word a request might use for a kind of file onto the
+// glob that selects it. Over-finding is deliberate: a word wrongly added costs
+// one option, and the model gets to say none of them fit.
+var extensionWords = map[string]string{
+	"go": ".go", "golang": ".go", "python": ".py", "py": ".py", "javascript": ".js",
+	"js": ".js", "typescript": ".ts", "ts": ".ts", "markdown": ".md", "md": ".md",
+	"json": ".json", "yaml": ".yaml", "yml": ".yaml", "toml": ".toml", "text": ".txt",
+	"texto": ".txt", "txt": ".txt", "shell": ".sh", "sh": ".sh", "bash": ".sh",
+	"html": ".html", "css": ".css", "sql": ".sql", "rust": ".rs", "rs": ".rs",
+	"java": ".java", "ruby": ".rb", "rb": ".rb", "php": ".php", "c": ".c",
+	"cpp": ".cpp", "csv": ".csv", "xml": ".xml", "mod": ".mod",
 }
 
 // stopwords keeps the fallback pass from filling the option list with the

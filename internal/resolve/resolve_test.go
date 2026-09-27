@@ -110,6 +110,9 @@ func TestDecideVerdicts(t *testing.T) {
 		opts     resolve.DecideOptions
 		verdict  resolve.Verdict
 		wantArgv string
+		// wantSuggestion marks the verdicts that should still carry the
+		// tool's best reading of the phrase, for display only.
+		wantSuggestion bool
 	}{
 		{
 			name: "a clear read-only request acts",
@@ -123,10 +126,12 @@ func TestDecideVerdicts(t *testing.T) {
 		{
 			name: "guardrail flags add their tokens",
 			answers: map[string]typesafe.Answer{
-				"intent":                   choice("list_directory", 0.94),
-				"guardrail.intent_clear":   {Type: typesafe.KindNoul, Noul: 0.95},
-				"list_directory.ls_hidden": {Type: typesafe.KindNoul, Noul: 0.9},
-				"list_directory.ls_long":   {Type: typesafe.KindNoul, Noul: 0.9},
+				"intent":                    choice("list_directory", 0.94),
+				"guardrail.intent_clear":    {Type: typesafe.KindNoul, Noul: 0.95},
+				"list_directory.ls_hidden":  {Type: typesafe.KindNoul, Noul: 0.9},
+				"list_directory.ls_hidden?": {Type: typesafe.KindNoul, Noul: 0.9},
+				"list_directory.ls_long":    {Type: typesafe.KindNoul, Noul: 0.9},
+				"list_directory.ls_long?":   {Type: typesafe.KindNoul, Noul: 0.9},
 			},
 			verdict:  resolve.VerdictAct,
 			wantArgv: "ls -a -l .",
@@ -137,7 +142,8 @@ func TestDecideVerdicts(t *testing.T) {
 				"intent":                 choice("list_directory", 0.42),
 				"guardrail.intent_clear": {Type: typesafe.KindNoul, Noul: 0.95},
 			},
-			verdict: resolve.VerdictAsk,
+			verdict:        resolve.VerdictAsk,
+			wantSuggestion: true,
 		},
 		{
 			name: "the escape hatch wins when it is competitive",
@@ -148,7 +154,8 @@ func TestDecideVerdicts(t *testing.T) {
 				},
 				"guardrail.intent_clear": {Type: typesafe.KindNoul, Noul: 0.95},
 			},
-			verdict: resolve.VerdictUnsupported,
+			verdict:        resolve.VerdictUnsupported,
+			wantSuggestion: true,
 		},
 		{
 			name: "a request to change something is refused",
@@ -174,7 +181,8 @@ func TestDecideVerdicts(t *testing.T) {
 				"intent":                 choice("list_directory", 0.94),
 				"guardrail.intent_clear": {Type: typesafe.KindNoul, Noul: 0.10},
 			},
-			verdict: resolve.VerdictAsk,
+			verdict:        resolve.VerdictAsk,
+			wantSuggestion: true,
 		},
 		{
 			name: "severe outcomes stop everything",
@@ -214,8 +222,22 @@ func TestDecideVerdicts(t *testing.T) {
 					t.Errorf("argv = %q, want %q", got, tc.wantArgv)
 				}
 			}
-			if decision.Verdict != resolve.VerdictAct && len(decision.Argv) != 0 {
-				t.Errorf("a non-acting verdict must not carry a command: %v", decision.Argv)
+			switch {
+			case decision.Verdict == resolve.VerdictAct:
+				if len(decision.Argv) == 0 {
+					t.Error("an acting verdict must carry a command")
+				}
+			case tc.wantSuggestion:
+				// A gated verdict may carry the best reading of the phrase,
+				// but only for display: it is never executed, because every
+				// caller executes on VerdictAct alone.
+				if len(decision.Argv) == 0 {
+					t.Error("expected a display-only suggestion alongside the ask")
+				}
+			default:
+				if len(decision.Argv) != 0 {
+					t.Errorf("a refused request must not carry even a suggestion: %v", decision.Argv)
+				}
 			}
 			if decision.Reason == "" && decision.Verdict != resolve.VerdictAct {
 				t.Error("every non-acting verdict needs a reason")
@@ -284,6 +306,7 @@ func TestEndToEndThroughTheHTTPClient(t *testing.T) {
 	}
 	answers["target_path"] = choice(".", 0.99)
 	answers["list_directory.ls_long"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.88}
+	answers["list_directory.ls_long?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.9}
 	answers["guardrail.injection"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.01}
 	answers["guardrail.destructive_request"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.02}
 	answers["guardrail.intent_clear"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.97}
@@ -399,5 +422,68 @@ func TestTheRequestUsesOnlyTheThreePrimitives(t *testing.T) {
 		if len(choice.Criteria) > typesafe.MaxChoiceOptions {
 			t.Errorf("choice %q has %d options, over the %d ceiling", id, len(choice.Criteria), typesafe.MaxChoiceOptions)
 		}
+	}
+}
+
+// TestSilenceDoesNotAddAFlag is the regression test for the first thing the
+// real model got wrong. Asked "liste todos os arquivos desse diretório", it
+// answered the hidden-files flag at p=0.52 — just over the 0.5 line — and the
+// command came back as `ls -a .`. The request says nothing about hidden
+// entries, so the gate must drop the flag even though the flag question itself
+// leans yes.
+func TestSilenceDoesNotAddAFlag(t *testing.T) {
+	p := plan(t, resolve.Options{})
+	answers := autoAnswers(p.Request)
+	answers["intent"] = choice("list_directory", 1.0)
+	answers["target_path"] = choice(".", 1.0)
+	answers["guardrail.intent_clear"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.96}
+	// The real observed readings: the flag leans yes, the gate says the
+	// request never brought it up.
+	answers["list_directory.ls_hidden"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.52}
+	answers["list_directory.ls_hidden?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.18}
+
+	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, resolve.DecideOptions{})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := strings.Join(decision.Argv, " "); got != "ls ." {
+		t.Errorf("argv = %q, want %q: silence must not add a flag", got, "ls .")
+	}
+	for _, note := range decision.Notes {
+		if note.Slot == "ls_hidden" && !strings.Contains(note.Detail, "não mencionado") {
+			t.Errorf("the note should say the request was silent, got %q", note.Detail)
+		}
+	}
+
+	// And when the user does bring it up, the flag lands.
+	answers["list_directory.ls_hidden?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.93}
+	decision, err = p.Decide(&typesafe.SystemOneResponse{Answers: answers}, resolve.DecideOptions{})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := strings.Join(decision.Argv, " "); got != "ls -a ." {
+		t.Errorf("argv = %q, want %q once the request mentions hidden entries", got, "ls -a .")
+	}
+}
+
+// TestContentSearchCanBeLimitedToMatchingFiles covers the other real gap: the
+// phrase "procure por TODO nos arquivos go" ran `rg -e TODO .`, silently
+// searching every file instead of the Go files that were asked for.
+func TestContentSearchCanBeLimitedToMatchingFiles(t *testing.T) {
+	p := plan(t, resolve.Options{})
+	answers := autoAnswers(p.Request)
+	answers["intent"] = choice("search_text", 0.95)
+	answers["search_terms"] = choice("TODO", 1.0)
+	answers["target_path"] = choice(".", 0.9)
+	answers["guardrail.intent_clear"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.96}
+	answers["search_text.search_glob"] = choice("*.go", 0.93)
+	answers["search_text.search_glob?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.91}
+
+	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, resolve.DecideOptions{})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := strings.Join(decision.Argv, " "); got != "rg -g *.go -e TODO ." {
+		t.Errorf("argv = %q, want the file filter to be applied", got)
 	}
 }

@@ -127,31 +127,37 @@ func targetPathOptions(e *env.Env) []Value {
 // extensions the request names, and the extensions that actually exist here.
 func namePatternSlot() Slot {
 	return Slot{
-		ID:       "name_pattern",
-		QID:      "name_pattern",
-		Question: "Which file name pattern should the command match? The option names are glob patterns used verbatim.",
-		Topic:    "which file names to match (an extension, a name, or a glob)",
-		Optional: true,
-		Default:  "any",
-		OptionsFor: func(e *env.Env) []Value {
-			opts := []Value{{Key: "any", Desc: "No file name filter: match every name."}}
-			seen := map[string]bool{"any": true}
-			add := func(pattern, desc string) {
-				if seen[pattern] {
-					return
-				}
-				seen[pattern] = true
-				opts = append(opts, Value{Key: pattern, Desc: desc, Argv: []string{pattern}})
-			}
-			for _, p := range e.Candidates.Patterns {
-				add(p, "File names matching the pattern "+p+", taken from the request.")
-			}
-			for _, ext := range extensions(e.Entries) {
-				add("*"+ext, "File names ending in "+ext+".")
-			}
-			return capValues(opts, typesafe.MaxChoiceOptions-1)
-		},
+		ID:         "name_pattern",
+		QID:        "name_pattern",
+		Question:   "Which file name pattern should the command match? The option names are glob patterns used verbatim.",
+		Topic:      "which file names to match (an extension, a name, or a glob)",
+		Stated:     true,
+		Default:    "any",
+		OptionsFor: namePatternOptions,
 	}
+}
+
+// namePatternOptions enumerates glob candidates in code, because a glob is an
+// open string that the model could not produce: explicit globs from the
+// request, the extensions the request names, and the extensions that actually
+// exist here. Shared by find's -name and the content search's file filter.
+func namePatternOptions(e *env.Env) []Value {
+	opts := []Value{{Key: "any", Desc: "No file name filter: match every name."}}
+	seen := map[string]bool{"any": true}
+	add := func(pattern, desc string) {
+		if seen[pattern] {
+			return
+		}
+		seen[pattern] = true
+		opts = append(opts, Value{Key: pattern, Desc: desc, Argv: []string{pattern}})
+	}
+	for _, p := range e.Candidates.Patterns {
+		add(p, "File names matching the pattern "+p+", taken from the request.")
+	}
+	for _, ext := range extensions(e.Entries) {
+		add("*"+ext, "File names ending in "+ext+".")
+	}
+	return capValues(opts, typesafe.MaxChoiceOptions-1)
 }
 
 // searchTermsSlot selects the text to search for. Also an open string, so it
@@ -203,27 +209,27 @@ func listDirectory() Command {
 				},
 				Slots: []Slot{
 					target,
-					flagSlot("ls_hidden",
+					flagSlot("ls_hidden", "hidden entries (names beginning with a dot, or dotfiles)",
 						"Does the request ask to include entries whose names begin with a dot (hidden entries)?",
 						"The request asks for everything, including hidden or dotfiles.",
 						"The request asks for a plain listing, or says nothing about hidden entries.",
 						"-a"),
-					flagSlot("ls_long",
+					flagSlot("ls_long", "how much detail to show for each entry (permissions, size, owner, date)",
 						"Does the request ask for details about each entry, such as permissions, size, owner or modification date?",
 						"The request asks for details beyond the bare names.",
 						"The request asks only for names, or for a plain listing.",
 						"-l"),
-					groupFlagSlot("ls_sort_time", "ls_sort",
+					groupFlagSlot("ls_sort_time", "ls_sort", "the order of the listing (by time rather than by name)",
 						"Does the request ask for the entries ordered by modification time, newest first, rather than by name?",
 						"The request mentions newest, oldest, most recent, latest or ordering by time.",
 						"The request asks for the default order, or says nothing about order.",
 						"-t"),
-					groupFlagSlot("ls_sort_size", "ls_sort",
+					groupFlagSlot("ls_sort_size", "ls_sort", "the order of the listing (by size)",
 						"Does the request ask for the entries ordered by size, largest first?",
 						"The request mentions biggest, largest, heaviest or ordering by size.",
 						"The request asks for the default order, or says nothing about size.",
 						"-S"),
-					flagSlot("ls_recursive",
+					flagSlot("ls_recursive", "whether the listing descends into subdirectories",
 						"Does the request ask the listing to descend into subdirectories?",
 						"The request asks for files at any depth, not just this level.",
 						"The request asks about one directory level, or says nothing about depth.",
@@ -261,7 +267,7 @@ func findFiles() Command {
 						ID:       "find_depth",
 						Question: "How deep below the path should the search descend?",
 						Topic:    "how deep to search",
-						Optional: true,
+						Stated:   true,
 						Default:  "3",
 						Options: []Value{
 							{Key: "1", Desc: "Only the path itself, no subdirectories.", Argv: []string{"-maxdepth", "1"}},
@@ -273,7 +279,7 @@ func findFiles() Command {
 						ID:       "find_type",
 						Question: "What kind of entries should the search return?",
 						Topic:    "whether to look for files or for directories",
-						Optional: true,
+						Stated:   true,
 						Default:  "any",
 						Options: []Value{
 							{Key: "any", Desc: "Entries of every kind, files and directories."},
@@ -285,7 +291,7 @@ func findFiles() Command {
 						ID:       "find_match",
 						Question: "Should the file name match be case-sensitive or case-insensitive?",
 						Topic:    "whether the name match should ignore case",
-						Optional: true,
+						Stated:   true,
 						Default:  "sensitive",
 						Requires: "name_pattern",
 						Options: []Value{
@@ -319,17 +325,17 @@ func searchText() Command {
 			slots := []Slot{
 				searchTermsSlot(),
 				target,
-				flagSlot("search_ignore_case",
+				flagSlot("search_ignore_case", "letter case in the search",
 					"Does the request ask for the search to ignore letter case?",
 					"The request asks for a case-insensitive match.",
 					"The request says nothing about case.",
 					"-i"),
-				flagSlot("search_files_only",
+				flagSlot("search_files_only", "listing only the names of the files that match",
 					"Does the request ask only for the names of the files that match, rather than the matching lines?",
 					"The request asks which files contain the text, not the lines.",
 					"The request asks to see the matching lines themselves.",
 					"-l"),
-				flagSlot("search_line_numbers",
+				flagSlot("search_line_numbers", "line numbers next to each match",
 					"Does the request ask for line numbers next to each match?",
 					"The request asks where in the file the match is.",
 					"The request says nothing about line numbers.",
@@ -338,11 +344,11 @@ func searchText() Command {
 
 			switch {
 			case e.Has("rg"):
-				slots = append(slots, Slot{
+				slots = append(slots, searchGlobSlot("-g"), Slot{
 					ID:       "search_scope",
 					Question: "Should the search look in every file, or respect the project's ignore rules?",
 					Topic:    "whether to search files that are normally ignored, such as hidden or git-ignored files",
-					Optional: true,
+					Stated:   true,
 					Default:  "respect_ignores",
 					Options: []Value{
 						{Key: "respect_ignores", Desc: "Skip files the project ignores, such as those listed in .gitignore."},
@@ -352,21 +358,51 @@ func searchText() Command {
 				return Spec{
 					Argv: []string{
 						"rg", "{search_ignore_case}", "{search_files_only}", "{search_line_numbers}",
-						"{search_scope}", "-e", "{search_terms}", "{target_path}",
+						"{search_scope}", "{search_glob}", "-e", "{search_terms}", "{target_path}",
 					},
 					Slots: slots,
 				}, true
 
 			case e.Has("grep"):
+				slots = append(slots, searchGlobSlot("--include"))
 				return Spec{
 					Argv: []string{
 						"grep", "-r", "{search_ignore_case}", "{search_files_only}",
-						"{search_line_numbers}", "-e", "{search_terms}", "{target_path}",
+						"{search_line_numbers}", "{search_glob}", "-e", "{search_terms}", "{target_path}",
 					},
 					Slots: slots,
 				}, true
 			}
 			return Spec{}, false
+		},
+	}
+}
+
+// searchGlobSlot limits a content search to matching file names. Each option
+// carries the program's own flag along with the pattern, so a bare flag can
+// never be left dangling when the user did not ask for a filter — the same
+// coupling trick as Requires, resolved inside the option instead.
+func searchGlobSlot(flag string) Slot {
+	base := namePatternOptions
+	return Slot{
+		ID:       "search_glob",
+		Question: "Should the search be limited to files whose names match something — an extension, a name, or a glob?",
+		Topic:    "which files to search in, by name or by extension",
+		Stated:   true,
+		Default:  "any",
+		OptionsFor: func(e *env.Env) []Value {
+			opts := []Value{{Key: "any", Desc: "No file name filter: search every file."}}
+			for _, opt := range base(e) {
+				if opt.Key == "any" {
+					continue
+				}
+				opts = append(opts, Value{
+					Key:  opt.Key,
+					Desc: opt.Desc,
+					Argv: append([]string{flag}, opt.Argv...),
+				})
+			}
+			return opts
 		},
 	}
 }
@@ -442,7 +478,7 @@ func diskUsage() Command {
 						ID:       "du_depth",
 						Question: "Should the report give one total, or a breakdown per subdirectory?",
 						Topic:    "how detailed the size report should be",
-						Optional: true,
+						Stated:   true,
 						Default:  "total",
 						Options: []Value{
 							{Key: "total", Desc: "One total for the whole path.", Argv: []string{"-s"}},
@@ -502,12 +538,12 @@ func gitStatus() Command {
 			return Spec{
 				Argv: []string{"git", "status", "{gs_short}", "{gs_branch}"},
 				Slots: []Slot{
-					flagSlot("gs_short",
+					flagSlot("gs_short", "a compact, one-line-per-file status",
 						"Does the request ask for a compact, one-line-per-file status?",
 						"The request asks for a short or compact status.",
 						"The request asks for the full status output.",
 						"-s"),
-					flagSlot("gs_branch",
+					flagSlot("gs_branch", "the branch name shown alongside the status",
 						"Does the request ask which branch this is, together with the status?",
 						"The request asks for the branch name or the branch state.",
 						"The request does not mention branches.",
@@ -533,7 +569,7 @@ func gitLog() Command {
 			return Spec{
 				Argv: []string{"git", "log", "{gl_oneline}", "{gl_limit}", "--", "{target_path}"},
 				Slots: []Slot{
-					flagSlot("gl_oneline",
+					flagSlot("gl_oneline", "a compact history, one line per commit",
 						"Does the request ask for a compact history, one line per commit?",
 						"The request asks for a brief or one-line-per-commit history.",
 						"The request asks for the full commit messages, or says nothing about brevity.",
@@ -542,7 +578,7 @@ func gitLog() Command {
 						ID:       "gl_limit",
 						Question: "How many commits back should the history go?",
 						Topic:    "how many commits to show",
-						Optional: true,
+						Stated:   true,
 						Default:  "10",
 						Options: []Value{
 							{Key: "5", Desc: "The five most recent commits.", Argv: []string{"-n", "5"}},
@@ -573,12 +609,12 @@ func gitDiff() Command {
 			return Spec{
 				Argv: []string{"git", "diff", "{gd_staged}", "{gd_stat}", "--", "{target_path}"},
 				Slots: []Slot{
-					flagSlot("gd_staged",
+					flagSlot("gd_staged", "changes that are already staged for commit",
 						"Does the request ask about changes that are already staged for commit?",
 						"The request asks for staged or added changes.",
 						"The request asks about unstaged working-tree changes, or says nothing about staging.",
 						"--staged"),
-					flagSlot("gd_stat",
+					flagSlot("gd_stat", "a summary of the changes rather than the full diff",
 						"Does the request ask only for a summary of which files changed, and how much, rather than the full diff?",
 						"The request asks for a summary or an overview of the changes.",
 						"The request asks for the actual diff, or says nothing about a summary.",
@@ -594,18 +630,24 @@ func gitDiff() Command {
 // helpers
 // ---------------------------------------------------------------------------
 
-func flagSlot(id, question, yes, no string, argv ...string) Slot {
+// flagSlot builds a yes/no slot gated by the "did the user say anything about
+// this?" question. The gate is what keeps a flag question answered on silence
+// from adding a flag nobody asked for; when the request is silent, the flag
+// stays off and the program's own default stands.
+func flagSlot(id, topic, question, yes, no string, argv ...string) Slot {
 	return Slot{
 		ID:            id,
+		Topic:         topic,
 		Question:      question,
 		Yes:           yes,
 		No:            no,
+		Stated:        true,
 		TrueArgvByCmd: map[string][]string{"*": argv},
 	}
 }
 
-func groupFlagSlot(id, group, question, yes, no string, argv ...string) Slot {
-	s := flagSlot(id, question, yes, no, argv...)
+func groupFlagSlot(id, group, topic, question, yes, no string, argv ...string) Slot {
+	s := flagSlot(id, topic, question, yes, no, argv...)
 	s.Group = group
 	return s
 }

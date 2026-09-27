@@ -131,11 +131,14 @@ latência. É o padrão de *speculative fan-out* da documentação da TypeSafe.
 1. **Function calling.** Cada argumento de conjunto fechado vira uma `Choice`
    cujas chaves são exatamente os valores aceitos. Nada precisa mapear um rótulo
    de volta para um argumento: a resposta já *é* o token.
-2. **`stated` (`<slot>?`).** Antes de usar uma opção opcional, um `Noul` pergunta
-   se o usuário **disse algo** sobre ela. Se não disse, a opção padrão declarada
-   vale. É isso que impede uma `Choice` de "escolher com confiança" uma flag que
-   ninguém mencionou — por exemplo, `find` sem `-name` em vez de um padrão
-   inventado.
+2. **`stated` (`<slot>?`).** Antes de usar um argumento opcional — uma flag ou
+   um valor —, um `Noul` pergunta se o usuário **disse algo** sobre ele. Se não
+   disse, o default declarado vale. É isso que impede uma pergunta respondida no
+   silêncio de virar uma decisão: com o modelo real, "liste todos os arquivos
+   desse diretório" responde a flag de arquivos ocultos em **p=0.52** — logo
+   acima da linha de 0.5 — e o comando saía `ls -a .`. A mesma frase tem o gate
+   em p=0.18, então a flag não entra. Quando o pedido realmente fala de arquivos
+   ocultos, o gate sobe para 0.93 e o `-a` aparece.
 3. **Pre-parsed value extraction.** Caminhos, padrões e termos de busca são
    strings abertas, e o jev não as produz. O código faz *over-find* com regex e
    `stat`, e o modelo apenas **seleciona** entre os candidatos. Tudo que volta é
@@ -159,7 +162,7 @@ Tudo que este CLI pode executar, e nada mais:
 | --- | --- |
 | `list_directory` | lista o conteúdo de um diretório |
 | `find_files` | procura arquivos por nome, com profundidade limitada |
-| `search_text` | procura texto dentro de arquivos (`rg`, ou `grep`) |
+| `search_text` | procura texto dentro de arquivos (`rg`, ou `grep`), com filtro de nome opcional |
 | `show_file` | imprime um arquivo, inteiro ou uma ponta |
 | `count_lines` | conta linhas |
 | `disk_usage` | tamanho de um caminho |
@@ -176,6 +179,24 @@ Adicionar um comando é adicionar uma entrada em
 `argv` com placeholders, os slots que decidem cada placeholder, e as descrições
 contrastivas (*o que é* / *para que não é*) que mantêm comandos vizinhos
 distinguíveis.
+
+## Calibração com o modelo real
+
+Os thresholds acima são pontos de partida. Estes são os números que o `jev` de
+verdade devolveu para este projeto, e o que eles mudaram:
+
+| Frase | Antes | Depois |
+| --- | --- | --- |
+| `liste todos os arquivos desse diretório` | `ls -a .` (flag em 0.52, falso positivo) | `ls .` (gate em 0.18) |
+| `liste tudo, incluindo os arquivos ocultos` | `ls -a .` | `ls -a .` (p=0.98, correto) |
+| `procure por TODO nos arquivos go` | `rg -e TODO .` (ignorava "arquivos go") | `rg -g '*.go' -e TODO .` |
+| `o que mudou` | `ask` sem saída útil | `ask` + sugestão `git status` + candidatos |
+
+Os gates de confiança continuam sendo o lugar mais provável de precisar de
+ajuste. `o que mudou` fica em `ask` porque o modelo divide entre `git_status` e
+`git_diff` (0.40) — o que é uma ambiguidade real, não um erro. Para quem preferir
+que ele aja nesse caso, `min_confidence` no config resolve; o comando continua
+sendo de leitura.
 
 ## Limites conhecidos
 
