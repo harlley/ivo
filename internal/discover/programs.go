@@ -23,9 +23,9 @@ type Program struct {
 	ReadOnly bool
 }
 
-// readOnlyPrograms is the set this layer is willing to run without being asked
-// twice. Everything else is still offered, and still refused until --allow-write
-// says otherwise: the alternative is a catalog that grows by hand again.
+// readOnlyPrograms is the set whose calls run without a caution. Everything
+// else is still offered, and still runs, but the confirmation says so: the
+// alternative is a catalog that grows by hand again.
 var readOnlyPrograms = map[string]bool{
 	"ls": true, "eza": true, "exa": true, "tree": true, "find": true, "fd": true,
 	"cat": true, "bat": true, "head": true, "tail": true, "less": true, "more": true,

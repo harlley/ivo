@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -83,6 +84,31 @@ func (p *Printer) Hint(format string, args ...any) {
 // Say prints a plain message to stdout.
 func (p *Printer) Say(format string, args ...any) {
 	fmt.Fprintf(p.Out, "%s\n", fmt.Sprintf(format, args...))
+}
+
+// Confirm asks a yes or no question and reads one line for the answer.
+//
+// Pressing enter confirms, which is the point of showing the command first: the
+// answer is a look at what is about to run rather than a spelling test. "n" and
+// "no" decline, and so does any other answer, because an unrecognised reply is
+// not consent.
+//
+// A closed input is not consent either. That distinction is the one that keeps
+// `jev "..." </dev/null`, a cron entry or a script that forgot --yolo from
+// approving something by accident, while a person pressing enter still does.
+func (p *Printer) Confirm(in io.Reader, question string) bool {
+	fmt.Fprintf(p.Err, "%s ", question)
+	reader := bufio.NewReader(in)
+	line, err := reader.ReadString('\n')
+	if err != nil && line == "" {
+		fmt.Fprintln(p.Err)
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true
+	}
+	return false
 }
 
 // IsTerminal reports whether f is attached to a terminal, so colour is only

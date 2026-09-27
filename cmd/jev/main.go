@@ -49,11 +49,11 @@ const (
 	exitNoKey      = 4 // no usable API key
 )
 
-func main() { os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() { os.Exit(realMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 
 // realMain takes its streams explicitly so the whole pipeline can be tested end
 // to end, including argument parsing and output.
-func realMain(args []string, stdout, stderr io.Writer) int {
+func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	opts, phrase, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "jev: %v\n", err)
@@ -114,7 +114,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	client := typesafe.NewClient(apiKey, typesafe.WithBaseURL(baseURL()))
-	evaluation, err := plan.Evaluate(ctx, client, resolve.DecideOptions{AllowWrite: opts.allowWrite})
+	evaluation, err := plan.Evaluate(ctx, client, resolve.DecideOptions{})
 	if err != nil {
 		if typesafe.IsAuthError(err) {
 			printer.Error("the API rejected the API key. Check %s.", typesafe.EnvAPIKey)
@@ -137,11 +137,24 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 
+	// Nothing runs without being asked for, unless --yolo was passed or the
+	// prompt has already been answered.
+	if !opts.yolo {
+		renderConfirmation(printer, decision)
+		if decision.Caution != "" {
+			printer.Warn("careful: %s", decision.Caution)
+		}
+		if !printer.Confirm(stdin, "run it? [Y/n]") {
+			printer.Hint("nothing ran. Pass --yolo to run without being asked.")
+			return exitUnresolved
+		}
+	}
+
 	outcome, err := run.Do(ctx, decision.Argv, run.Options{
 		Execute: true,
 		Allow:   catalog.Allowlist(plan.Bindings, systemEnv),
 		Filter:  outputFilter(decision.Output),
-		Stdin:   os.Stdin,
+		Stdin:   stdin,
 		Stdout:  stdout,
 		Stderr:  stderr,
 	})
@@ -170,13 +183,20 @@ func baseURL() string {
 	return typesafe.DefaultBaseURL
 }
 
+// renderConfirmation shows the call that is about to run and why, so the answer
+// is made on evidence rather than on trust.
+func renderConfirmation(p *ui.Printer, d *resolve.Decision) {
+	p.Command(ui.ShellQuote(d.Argv))
+	p.Field("command", fmt.Sprintf("%s, confidence %.2f", d.Tool.Name, d.Intent.Confidence))
+}
+
 // renderDryRun prints what would run and stops.
 func renderDryRun(p *ui.Printer, d *resolve.Decision) {
 	p.Command(ui.ShellQuote(d.Argv))
 	p.Field("command", fmt.Sprintf("%s, confidence %.2f", d.Tool.Name, d.Intent.Confidence))
 	p.Field("severity", fmt.Sprintf("%.2f", d.Severity))
 	printNotes(p, d)
-	p.Hint("dry-run: nothing ran. Run again without --dry-run to execute.")
+	p.Hint("dry-run: nothing ran. Run it again without --dry-run to be asked, or with --yolo to run straight away.")
 }
 
 // renderNoCommand explains why nothing will run.
@@ -358,11 +378,11 @@ func toolNames(tools []catalog.Tool) []string {
 // ---------------------------------------------------------------------------
 
 type cliOptions struct {
-	dryRun     bool
-	allowWrite bool
-	tools      bool
-	help       bool
-	version    bool
+	dryRun  bool
+	yolo    bool
+	tools   bool
+	help    bool
+	version bool
 }
 
 func parseArgs(args []string) (cliOptions, string, error) {
@@ -388,8 +408,8 @@ func parseArgs(args []string) (cliOptions, string, error) {
 			opts.version = true
 		case arg == "--tools":
 			opts.tools = true
-		case arg == "--allow-write":
-			opts.allowWrite = true
+		case arg == "--yolo":
+			opts.yolo = true
 		case strings.HasPrefix(arg, "-") && arg != "-":
 			return opts, "", fmt.Errorf("unknown option: %s", arg)
 		default:
@@ -407,9 +427,9 @@ USAGE
   jev [options] "phrase in natural language"
 
 The command is never written by a language model. jev answers typed questions
-about a fixed catalog of commands and options, and this program assembles the
-argv from the answers. It runs once the gates pass; --dry-run shows it without
-running anything.
+about the tools this machine has, and this program assembles the argv from the
+answers. It asks before running anything, unless --yolo says otherwise, and
+--dry-run shows the command without running it.
 
 EXAMPLES
   jev "list all files in this directory"
@@ -420,8 +440,7 @@ EXAMPLES
 OPTIONS
   -n, --dry-run            show the resolved command and stop, running nothing
   -x, --execute            run the resolved command (already the default)
-  --allow-write            permit a tool that is not read-only, and a call the
-                           side effect question did not clear
+  --yolo                   run without asking for confirmation
   --tools [NAME]           list the tools, or show one tool's parameters and
                            the manual page to read next
   -h, --help               this help

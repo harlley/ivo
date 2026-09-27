@@ -320,7 +320,7 @@ func (p *Plan) Evaluate(ctx context.Context, client Asker, opts DecideOptions) (
 	// A tool nobody classified has to pass one more question, asked about the
 	// call that was built rather than about the request. Being told twice
 	// already is a reason not to ask.
-	if tool, ok := p.tool(chosenTool(first.Response)); ok && !tool.ReadOnly && !opts.AllowWrite {
+	if tool, ok := p.tool(chosenTool(first.Response)); ok && !tool.ReadOnly {
 		if binding, ok := p.Bindings[tool.Name]; ok {
 			asked, err := ask(typesafe.SystemOneRequest{
 				State: p.Request.State,
@@ -485,6 +485,9 @@ type Decision struct {
 	Alternatives []typesafe.RankedOption
 	Guardrails   map[string]typesafe.Answer
 	Severity     float64
+	// Caution is what the person should know before approving the call. It is
+	// empty when there is nothing to say.
+	Caution string
 }
 
 // DecideOptions are the gates. Zero values fall back to the documented
@@ -495,7 +498,6 @@ type DecideOptions struct {
 	DestructiveThreshold float64
 	InjectionThreshold   float64
 	SeverityThreshold    float64
-	AllowWrite           bool
 }
 
 func (o DecideOptions) withDefaults() DecideOptions {
@@ -594,25 +596,27 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, flags []string, callIsSaf
 		// The escape hatch won, so there is no tool to offer.
 		return d, nil
 	}
-	if !tool.ReadOnly && !opts.AllowWrite && !callIsSafe {
-		d.Verdict = VerdictBlocked
-		d.Reason = fmt.Sprintf(
-			"%s is not a read-only tool and this call did not come back clean; use --allow-write to permit it",
-			tool.Name)
-		return d, nil
+	// Consent is the gate, so nothing is refused for being writable. What the
+	// read-only table and the side effect question are for is telling the person
+	// what they are about to approve: a call that was judged to change something
+	// is labelled, and the label is what makes the confirmation a decision
+	// rather than a formality.
+	switch {
+	case !tool.ReadOnly && !callIsSafe:
+		d.Caution = fmt.Sprintf("%s is not read-only and this call was judged to change something", tool.Name)
+	case !tool.ReadOnly:
+		d.Caution = fmt.Sprintf("%s is not in the read-only set", tool.Name)
+	case d.Severity >= opts.SeverityThreshold:
+		d.Caution = fmt.Sprintf("this call scored %.2f on potential harm", d.Severity)
 	}
-	// Only now, with a tool in hand: a request for a change answered by a tool
-	// that cannot make one is refused rather than approximated.
+
+	// With a tool in hand: a request for a change answered by a tool that cannot
+	// make one is refused rather than approximated.
 	if tool.ReadOnly {
 		if destructive := d.Guardrails["guardrail.destructive_request"].Noul; destructive >= opts.DestructiveThreshold {
 			d.Verdict = VerdictUnsupported
 			d.Reason = fmt.Sprintf(
 				"the request asks for a change (p=%.2f) and the tool that fits only reads", destructive)
-			return d, nil
-		}
-		if d.Severity >= opts.SeverityThreshold {
-			d.Verdict = VerdictBlocked
-			d.Reason = fmt.Sprintf("severity estimated at %.2f, at or above the %.2f limit", d.Severity, opts.SeverityThreshold)
 			return d, nil
 		}
 	}

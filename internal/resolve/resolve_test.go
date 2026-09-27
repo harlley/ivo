@@ -111,12 +111,13 @@ func TestDecideVerdicts(t *testing.T) {
 	p := plan(t)
 
 	cases := []struct {
-		name       string
-		answers    map[string]typesafe.Answer
-		verdict    resolve.Verdict
-		flags      []string
-		callIsSafe bool
-		wantArgv   string
+		name        string
+		answers     map[string]typesafe.Answer
+		verdict     resolve.Verdict
+		flags       []string
+		callIsSafe  bool
+		wantCaution bool
+		wantArgv    string
 		// wantSuggestion marks the verdicts that should still carry the tool's
 		// best reading of the phrase, for display only.
 		wantSuggestion bool
@@ -188,13 +189,15 @@ func TestDecideVerdicts(t *testing.T) {
 			wantSuggestion: true,
 		},
 		{
-			name: "severe outcomes stop everything",
+			name: "a severe estimate becomes a caution, not a block",
 			answers: map[string]typesafe.Answer{
 				"intent":                  choice("list_directory", 0.94),
 				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
 				"guardrail.severity":      {Type: typesafe.KindScore, Score: 3.2},
 			},
-			verdict: resolve.VerdictBlocked,
+			verdict:     resolve.VerdictAct,
+			wantArgv:    "ls .",
+			wantCaution: true,
 		},
 		{
 			name: "an unresolvable target asks back",
@@ -243,6 +246,9 @@ func TestDecideVerdicts(t *testing.T) {
 			}
 			if decision.Reason == "" && decision.Verdict != resolve.VerdictAct {
 				t.Error("every non-acting verdict needs a reason")
+			}
+			if tc.wantCaution && decision.Caution == "" {
+				t.Error("expected a caution for the prompt")
 			}
 		})
 	}
@@ -698,11 +704,13 @@ func TestAWordThatNamesAProgramBecomesATool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if evaluation.Decision.Verdict != resolve.VerdictBlocked {
-		t.Fatalf("verdict = %q, want blocked for a call that changes things", evaluation.Decision.Verdict)
+	// Consent is the gate now, so the verdict still acts: what the judgment buys
+	// is a caution shown before the question.
+	if evaluation.Decision.Verdict != resolve.VerdictAct {
+		t.Fatalf("verdict = %q (%s), want act", evaluation.Decision.Verdict, evaluation.Decision.Reason)
 	}
-	if !strings.Contains(evaluation.Decision.Reason, "allow-write") {
-		t.Errorf("reason = %q, want it to say how to permit it", evaluation.Decision.Reason)
+	if evaluation.Decision.Caution == "" {
+		t.Error("a call judged to change something has to carry a caution for the prompt")
 	}
 }
 

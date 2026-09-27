@@ -14,12 +14,24 @@ $ ls .
 dry-run: nothing ran. Run again without --dry-run to execute.
 
 $ jev "list all files in this directory"
+$ ls .
+  command               list_directory, confidence 1.00
+run it? [Y/n]
 cmd
 go.mod
 internal
 README.md
 scripts
 ```
+
+The command is shown, and then enter runs it. `--yolo` runs without being asked,
+which is what a script wants, and `--dry-run` shows the command and stops.
+
+Enter confirms and `n` declines, and so does anything unrecognised, because an
+answer nobody understood is not consent. A closed input is not consent either:
+that distinction is what keeps `jev "..." </dev/null`, a cron entry, or a script
+that forgot `--yolo` from approving something by accident, while a person
+pressing enter still approves it.
 
 The call is never written by a language model. It answers typed questions about
 a fixed set of tools and their parameters, and code binds the filled call to an
@@ -74,7 +86,7 @@ jev [options] "phrase in natural language"
 | (default) | run the resolved call |
 | `-n`, `--dry-run` | show the resolved call and the parameter decisions, then stop |
 | `-x`, `--execute` | run it (already the default; cancels an earlier `--dry-run`) |
-| `--allow-write` | permit a tool that is not read-only, and a call the side-effect question did not clear |
+| `--yolo` | run without asking for confirmation |
 | `--tools [NAME]` | list the tools, or show one tool's parameters and its manual page |
 | `-h`, `--help` | usage |
 | `-V`, `--version` | version |
@@ -218,12 +230,14 @@ asked about the *call that was built*, not about the request:
 
 ```
 "open the current project in zed"   ->  zed .       changes nothing  ->  runs
-"remove the build directory with rm" ->  rm -rf build   changes data  ->  refused, use --allow-write
+"remove the build directory with rm" ->  rm -rf build   changes data  ->  asks, with the caution shown
 ```
 
 Judging the call rather than the sentence is what makes a tool space that is not
 written down usable: opening an editor in a project *reads* like a change, while
-`zed .` does not. `--allow-write` overrides the judgment when you mean it.
+`zed .` does not. A call that was judged to change something is labelled with
+that caution right above the question, so the answer is made on what is about to
+happen rather than on what was asked for.
 
 The shaped tools, in detail:
 
@@ -379,8 +393,8 @@ right parameter values. That is what the eval is for.
   for two things lands on `ask` or `unsupported`.
 - **Nothing is written without being asked twice.** A program that is not in the
   read-only table runs only when the call-level judgment clears it, or when
-  `--allow-write` says so. The judgment is a model answer with a threshold, so it
-  is a gate and not a proof.
+  the confirmation, which is the real gate. The judgment is a model answer with
+  a threshold, so it is a label and not a proof.
 - **A closed vocabulary is closed.** What is not in the catalog does not happen,
   and the honest output is `unsupported`.
 - **255 values per Choice.** The directory listing is capped at 120 entries. A
