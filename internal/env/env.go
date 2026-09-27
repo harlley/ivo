@@ -75,8 +75,13 @@ type Env struct {
 
 	// Docs holds what each program documents about itself, so the catalog can
 	// build its parameters from the program instead of from a hand written
-	// list.
+	// list. Programs are added to it on demand, the first time one is needed.
 	Docs map[string]discover.Docs
+
+	// Commands are the commands this machine can run. Which of them the request
+	// means is a question for the model, and this is the list it is checked
+	// against.
+	Commands []string
 
 	Candidates Candidates
 }
@@ -97,6 +102,28 @@ type ProbeOptions struct {
 	// Document names the programs whose documentation should be read, so their
 	// own option lists become available as parameters.
 	Document []string
+	// DiscoverCommands lists what this machine can run, so a word of the
+	// request that names a program can become a tool.
+	DiscoverCommands bool
+}
+
+// Documentation returns what a program documents, reading it the first time it
+// is asked for and remembering it afterwards. Only the program that wins the
+// tool question is ever asked about, so a call reads one program's
+// documentation, not all of them.
+func (e *Env) Documentation(program string) (discover.Docs, bool) {
+	if docs, ok := e.Docs[program]; ok {
+		return docs, true
+	}
+	docs, err := discover.Load(program)
+	if err != nil || len(docs.Options) == 0 {
+		return discover.Docs{}, false
+	}
+	if e.Docs == nil {
+		e.Docs = map[string]discover.Docs{}
+	}
+	e.Docs[program] = docs
+	return docs, true
 }
 
 // Probe inspects the machine. It never fails on a missing directory listing or
@@ -123,8 +150,34 @@ func Probe(opts ProbeOptions) (*Env, error) {
 	e.Entries, e.EntryCount, e.Truncated, e.EntriesError = readEntries(cwd, opts.MaxEntries)
 	e.Candidates = extractCandidates(e.Request, cwd, home)
 	e.Docs = loadDocs(opts.Document, e.Bins)
+	if opts.DiscoverCommands {
+		e.Commands, _ = discover.Commands()
+	}
 
 	return e, nil
+}
+
+// CommandName returns the command a word names, if this machine has one. Names
+// are matched as written and then in lower case, because a request may start a
+// sentence with the name of a program.
+func (e *Env) CommandName(word string) string {
+	if word == "" {
+		return ""
+	}
+	for _, candidate := range []string{word, strings.ToLower(word)} {
+		if e.HasCommand(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// HasCommand reports whether this machine can run a command by that name.
+func (e *Env) HasCommand(name string) bool {
+	// discover.Commands returns a sorted list, so the lookup is a binary
+	// search over a few thousand names.
+	idx := sort.SearchStrings(e.Commands, name)
+	return idx < len(e.Commands) && e.Commands[idx] == name
 }
 
 // loadDocs reads what each program documents. A program whose documentation

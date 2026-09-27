@@ -136,6 +136,15 @@
         "cat",
         "rg"
       ]
+    },
+    {
+      "phrase": "open the current project in zed",
+      "why": "the tool space is the machine's commands: the word filter finds zed, and a call that changes nothing runs",
+      "verdict": "act",
+      "command": "zed",
+      "argv_has": [
+        "zed"
+      ]
     }
   ]
 }

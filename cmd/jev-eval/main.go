@@ -132,6 +132,8 @@ func evaluate(client *typesafe.Client, c eval.Case, timeout time.Duration) eval.
 		// offer, and the eval would silently measure a smaller layer than the
 		// CLI runs.
 		Document: catalog.Documented(catalog.All()),
+		// The commands this machine can run are candidates too.
+		DiscoverCommands: true,
 	})
 	if err != nil {
 		result.Failure = err.Error()

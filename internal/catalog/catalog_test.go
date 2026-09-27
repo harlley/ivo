@@ -626,7 +626,10 @@ func TestSharedQuestionIdsAskTheSameQuestion(t *testing.T) {
 	}
 	seen := map[string]owned{}
 
-	for _, tool := range catalog.All() {
+	// The shaped tools and the ones built from the machine's own commands: a
+	// question id has to mean the same thing whichever tool asks it.
+	tools := append(catalog.All(), catalog.NamedProgram(discover.Program{Name: "zed"}))
+	for _, tool := range tools {
 		binding, ok := tool.Bind(e)
 		if !ok {
 			continue

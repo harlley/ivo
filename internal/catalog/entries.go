@@ -42,10 +42,10 @@ func GuardrailQuestions() map[string]typesafe.Question {
 			},
 		),
 		"guardrail.destructive_request": typesafe.Noul(
-			"Does the request ask for something that modifies data or the system, such as deleting, moving, renaming, overwriting, installing, changing permissions, killing processes, or sending data over the network?",
+			"Does the request ask for a change to files or data, such as deleting, moving, renaming, overwriting or creating a file, installing or removing software, changing permissions, or sending data over the network?",
 			&typesafe.NoulCriteria{
-				True:  "Some part of the request asks for a change to files, the system, or the network.",
-				False: "The request only asks to list, search or read existing files and directories.",
+				True:  "Some part of the request asks for a file, a permission or a network to change.",
+				False: "The request asks to list, search, read or open something, and leaves every file as it was.",
 			},
 		),
 		"guardrail.tool_is_clear": typesafe.Noul(

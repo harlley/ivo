@@ -73,10 +73,11 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	printer := ui.New(color, stdout, stderr)
 
 	systemEnv, err := env.Probe(env.ProbeOptions{
-		Request:    phrase,
-		MaxEntries: maxEntries,
-		Binaries:   catalog.Binaries(),
-		Document:   catalog.Documented(catalog.All()),
+		Request:          phrase,
+		MaxEntries:       maxEntries,
+		Binaries:         catalog.Binaries(),
+		Document:         catalog.Documented(catalog.All()),
+		DiscoverCommands: true,
 	})
 	if err != nil {
 		printer.Error("could not inspect the environment: %v", err)
@@ -357,10 +358,11 @@ func toolNames(tools []catalog.Tool) []string {
 // ---------------------------------------------------------------------------
 
 type cliOptions struct {
-	dryRun  bool
-	tools   bool
-	help    bool
-	version bool
+	dryRun     bool
+	allowWrite bool
+	tools      bool
+	help       bool
+	version    bool
 }
 
 func parseArgs(args []string) (cliOptions, string, error) {
@@ -386,6 +388,8 @@ func parseArgs(args []string) (cliOptions, string, error) {
 			opts.version = true
 		case arg == "--tools":
 			opts.tools = true
+		case arg == "--allow-write":
+			opts.allowWrite = true
 		case strings.HasPrefix(arg, "-") && arg != "-":
 			return opts, "", fmt.Errorf("unknown option: %s", arg)
 		default:
@@ -416,6 +420,8 @@ EXAMPLES
 OPTIONS
   -n, --dry-run            show the resolved command and stop, running nothing
   -x, --execute            run the resolved command (already the default)
+  --allow-write            permit a tool that is not read-only, and a call the
+                           side effect question did not clear
   --tools [NAME]           list the tools, or show one tool's parameters and
                            the manual page to read next
   -h, --help               this help

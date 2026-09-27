@@ -74,6 +74,7 @@ jev [options] "phrase in natural language"
 | (default) | run the resolved call |
 | `-n`, `--dry-run` | show the resolved call and the parameter decisions, then stop |
 | `-x`, `--execute` | run it (already the default; cancels an earlier `--dry-run`) |
+| `--allow-write` | permit a tool that is not read-only, and a call the side-effect question did not clear |
 | `--tools [NAME]` | list the tools, or show one tool's parameters and its manual page |
 | `-h`, `--help` | usage |
 | `-V`, `--version` | version |
@@ -180,9 +181,51 @@ its binding (`Argv`).
 Counting and arithmetic stay in code: the model does not count reliably, so
 `entry_count` and the listing caps are computed here.
 
-## The catalog
+## Where the tools come from
 
-Four read-only tools, and nothing else:
+Two places, and only the first of them is written down:
+
+- **Shaped tools.** Five, written here, because their operands have a meaning
+  this layer has to know: `list_directory` takes a path, `search_text` takes a
+  term and a path, and so on. Their flags are still not written down: those come
+  from the programs they bind to.
+- **The commands this machine can run.** The shell is asked for its command list
+  (2093 of them here, in 0.1 seconds), and the request is read word by word to
+  find which words name a program:
+
+```
+open the current project in zed
+  open     is this a program?  no
+  current  is this a program?  no
+  project  is this a program?  no
+  zed      is this a program?  yes   -> zed, which this machine has
+```
+
+One question per word, all in one request, so the filter costs one round trip.
+A word the model calls a program still has to *exist* here before it becomes a
+tool, so the model can find a command but never invent one. Its description and
+its options then come from its own `--help` or manual, read once and cached.
+
+Reading the list natively is what makes this affordable: listing 2093 names
+takes a tenth of a second, while asking the system to describe just eight of
+them took seven.
+
+### What is allowed to run
+
+`ls`, `rg`, `cat` and a few dozen more are classified read-only in code, and
+they run. Everything else, `zed` and `rm` alike, has to pass one more question
+asked about the *call that was built*, not about the request:
+
+```
+"open the current project in zed"   ->  zed .       changes nothing  ->  runs
+"remove the build directory with rm" ->  rm -rf build   changes data  ->  refused, use --allow-write
+```
+
+Judging the call rather than the sentence is what makes a tool space that is not
+written down usable: opening an editor in a project *reads* like a change, while
+`zed .` does not. `--allow-write` overrides the judgment when you mean it.
+
+The shaped tools, in detail:
 
 | Tool | What it does |
 | --- | --- |
@@ -192,10 +235,13 @@ Four read-only tools, and nothing else:
 | `report_working_directory` | print the current directory |
 | `read_manual` | print the manual page of one of the programs above |
 
-Adding a tool means adding one function in
+Every other command on the machine is reachable by naming it.
+
+A shaped tool means adding one function in
 [`internal/catalog/entries.go`](internal/catalog/entries.go): a name, the
-description the model chooses by, and the parameters with their binding. Its
-flags are not written down at all: they are read from the program.
+description the model chooses by, and the operands with their binding. Nothing
+else needs writing down: a command nobody shaped is still reachable, with its
+description and its flags read from the program itself.
 
 | Tool | Options come from | Read from | Cost |
 | --- | --- | --- | --- |
@@ -278,12 +324,12 @@ effect.
 The current run, against `jev-1.13.0`:
 
 ```
-15/15 runs passed, agreement 15/15 cases, 7.2s, 61548 tokens, jev-1.13.0
+16/16 runs passed, agreement 16/16 cases, 11.3s, 75741 tokens, jev-1.13.0
 ```
 
-45/45 over three consecutive runs, with every case producing an identical
-decision each time. The tokens buy up to five requests per phrase: one to choose
-the tool, and up to four rounds of the walk.
+The tokens buy up to six requests per phrase: one for the word filter, one to
+choose the tool, up to four rounds of the walk, and one more when the tool is
+not read-only.
 
 The eval earned its place immediately. Its first run failed two cases, and both
 were real:
@@ -331,9 +377,10 @@ right parameter values. That is what the eval is for.
 
 - **No command chaining.** No pipes: one call, one program. A phrase that asks
   for two things lands on `ask` or `unsupported`.
-- **Nothing is written.** Requests to change something are refused with that
-  explanation, rather than answered with something adjacent. The flags exist
-  (`ReadOnly`, and the decision layer checks them), but no tool uses them yet.
+- **Nothing is written without being asked twice.** A program that is not in the
+  read-only table runs only when the call-level judgment clears it, or when
+  `--allow-write` says so. The judgment is a model answer with a threshold, so it
+  is a gate and not a proof.
 - **A closed vocabulary is closed.** What is not in the catalog does not happen,
   and the honest output is `unsupported`.
 - **255 values per Choice.** The directory listing is capped at 120 entries. A

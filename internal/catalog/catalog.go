@@ -321,11 +321,81 @@ const FlagsPlaceholder = "{flags}"
 // This is what removes the need to catalogue a tool's capabilities by hand: the
 // flag surface comes from the manual.
 func DocumentedOptions(e *env.Env, program string) []discover.Option {
-	docs, ok := e.Docs[program]
+	docs, ok := e.Documentation(program)
 	if !ok {
 		return nil
 	}
 	return discover.Flags(docs, maxDiscoveredFlags)
+}
+
+// WordQuestion asks whether one word of the request names a program to run.
+//
+// This is the first filter, and it is the model's rather than a keyword match,
+// because a keyword match cannot tell a verb from a binary. "abra o projeto
+// atual no zed" contains one program name, and the question is asked once per
+// word, in parallel, so the whole filter costs one round trip.
+func WordQuestion(word string) typesafe.Question {
+	return typesafe.Noul(
+		map[string]any{
+			"word":     word,
+			"question": "Does the request use `word` as the name of a program to run?",
+			"focus":    "A verb or a noun of the sentence is not a program name, even when it looks like one.",
+		},
+		&typesafe.NoulCriteria{
+			True:  "`word` names a program the request wants executed.",
+			False: "`word` is an ordinary word of the sentence.",
+		},
+	)
+}
+
+// WordQuestionID is the id of the question about the nth word.
+func WordQuestionID(nth int) string { return fmt.Sprintf("word.%d", nth) }
+
+// WordThreshold is the probability at which a word counts as naming a program.
+const WordThreshold = 0.5
+
+// NamedProgram turns a command this machine can run into a tool. Nothing about
+// it is written here: its description comes from its own documentation, and its
+// options are read from there when the walk reaches it.
+func NamedProgram(program discover.Program) Tool {
+	what := program.Summary
+	if what == "" {
+		what = "The " + program.Name + " command, as installed on this machine."
+	}
+	return Tool{
+		Name:     program.Name,
+		What:     what,
+		NotFor:   "Anything another tool in this list already does with a known shape.",
+		ReadOnly: program.ReadOnly,
+		Needs:    []string{program.Name},
+		Bind: func(e *env.Env) (Binding, bool) {
+			target := targetParam()
+			// The operand is optional here, because a program's arguments are
+			// its own business: when the request names no path, the program is
+			// called without one.
+			//
+			// It also needs its own question id. The shaped tools share
+			// target_path and none of them gates it, so reusing the id would
+			// give one question two shapes, which the guard test exists to
+			// catch.
+			target.QID = "operand"
+			target.Topic = "a path or argument the program should act on"
+			target.Gated = true
+			target.Default = "no_argument"
+			target.ValuesFor = func(e *env.Env) []Value {
+				values := []Value{{
+					Key:  "no_argument",
+					Desc: "No path at all: call the program with no operand.",
+				}}
+				return append(values, targetValues(e)...)
+			}
+			return Binding{
+				Argv:     []string{program.Name, FlagsPlaceholder, "{target}"},
+				Params:   []Param{target},
+				Discover: program.Name,
+			}, true
+		},
+	}
 }
 
 // OptionQuestion asks which option to add to the call built so far.
@@ -402,6 +472,33 @@ func SatisfiedQuestion(candidate string) typesafe.Question {
 		},
 	)
 }
+
+// SideEffectQuestion asks whether the call that was built would change anything.
+//
+// This is the gate a program nobody has classified has to pass. It is asked
+// about the resolved call rather than about the request, which is what makes it
+// usable for a tool space that is not written in code: a request to open an
+// editor in a project reads like a change, while the call zed . does not.
+func SideEffectQuestion(candidate string) typesafe.Question {
+	return typesafe.Noul(
+		map[string]any{
+			"candidate": candidate,
+			"question":  "Would running `candidate` change anything on this machine, or reach the network?",
+			"focus":     "Judge the call itself: reading, listing, searching and opening something are not changes.",
+		},
+		&typesafe.NoulCriteria{
+			True:  "`candidate` deletes, moves, overwrites or creates data, installs or removes software, changes permissions, kills a process, or sends data over the network.",
+			False: "`candidate` only reads or displays something, or opens an application, and leaves the machine as it was.",
+		},
+	)
+}
+
+// SideEffectQuestionID is the id of that question, and SideEffectThreshold is
+// the probability above which the call counts as changing something.
+const (
+	SideEffectQuestionID = "side_effect"
+	SideEffectThreshold  = 0.5
+)
 
 // SatisfiedThreshold is the probability at which the call built so far counts
 // as answering the request.
@@ -659,7 +756,7 @@ func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, flags 
 	// The options chosen in the flag stage are validated against the option
 	// list the program documented, which is the closed set for this position.
 	allowedFlags := map[string]bool{}
-	for _, option := range binding.Options {
+	for _, option := range DocumentedOptions(e, binding.Discover) {
 		if len(option.Flags) > 0 {
 			allowedFlags[option.Flags[0]] = true
 		}

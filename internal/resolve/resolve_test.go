@@ -26,7 +26,7 @@ func testEnv(t *testing.T) *env.Env {
 		bins[b] = true
 	}
 	return &env.Env{
-		Request: "list all files in this directory",
+		Request: "list the files with details",
 		OS:      "darwin",
 		CWD:     "/tmp/project",
 		Home:    "/Users/test",
@@ -111,11 +111,12 @@ func TestDecideVerdicts(t *testing.T) {
 	p := plan(t)
 
 	cases := []struct {
-		name     string
-		answers  map[string]typesafe.Answer
-		verdict  resolve.Verdict
-		flags    []string
-		wantArgv string
+		name       string
+		answers    map[string]typesafe.Answer
+		verdict    resolve.Verdict
+		flags      []string
+		callIsSafe bool
+		wantArgv   string
 		// wantSuggestion marks the verdicts that should still carry the tool's
 		// best reading of the phrase, for display only.
 		wantSuggestion bool
@@ -212,7 +213,7 @@ func TestDecideVerdicts(t *testing.T) {
 			for k, v := range tc.answers {
 				answers[k] = v
 			}
-			decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, tc.flags, resolve.DecideOptions{})
+			decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, tc.flags, tc.callIsSafe, resolve.DecideOptions{})
 			if err != nil {
 				t.Fatalf("Decide: %v", err)
 			}
@@ -259,7 +260,7 @@ func TestAlternativesAreOfferedOnALowConfidenceAnswer(t *testing.T) {
 			catalog.NoneKey:  0.05,
 		},
 	}
-	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, nil, resolve.DecideOptions{})
+	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, nil, false, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -342,6 +343,9 @@ func stageOne(tool string, confidence float64) map[string]typesafe.Answer {
 func TestTheWalkAccumulatesOptionsUntilTheCallSatisfies(t *testing.T) {
 	p := plan(t)
 	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		// The word filter runs first. Nothing here names a program, so the
+		// shaped tools are the whole vocabulary for this call.
+		{},
 		stageOne("list_directory", 0.95),
 		// Round one: ls alone is not enough, so add -a.
 		{"satisfied.0": noul(0.08), "options.0": choice("-a", 0.94)},
@@ -355,8 +359,9 @@ func TestTheWalkAccumulatesOptionsUntilTheCallSatisfies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if evaluation.Stages != 4 {
-		t.Errorf("stages = %d, want the tool stage and three rounds", evaluation.Stages)
+	// The word filter, the tool stage, and three rounds.
+	if evaluation.Stages != 5 {
+		t.Errorf("stages = %d, want the word filter, the tool stage and three rounds", evaluation.Stages)
 	}
 	if got := strings.Join(evaluation.Flags, " "); got != "-a -l" {
 		t.Errorf("flags = %q, want -a -l", got)
@@ -367,10 +372,10 @@ func TestTheWalkAccumulatesOptionsUntilTheCallSatisfies(t *testing.T) {
 
 	// Each round carries the call built so far, because judging whether it
 	// already satisfies the request is the whole question.
-	if got := fmt.Sprint(asker.requests[1].Questions["satisfied.0"]); !strings.Contains(got, "ls .") {
+	if got := fmt.Sprint(asker.requests[2].Questions["satisfied.0"]); !strings.Contains(got, "ls .") {
 		t.Errorf("the first satisfaction question should describe ls ., got %v", got)
 	}
-	if got := fmt.Sprint(asker.requests[2].Questions["satisfied.1"]); !strings.Contains(got, "ls -a .") {
+	if got := fmt.Sprint(asker.requests[3].Questions["satisfied.1"]); !strings.Contains(got, "ls -a .") {
 		t.Errorf("the second should describe ls -a ., got %v", got)
 	}
 }
@@ -378,6 +383,7 @@ func TestTheWalkAccumulatesOptionsUntilTheCallSatisfies(t *testing.T) {
 func TestTheWalkStopsWhenTheCallIsAlreadyEnough(t *testing.T) {
 	p := plan(t)
 	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		{},
 		stageOne("list_directory", 0.95),
 		{"satisfied.0": noul(0.88), "options.0": choice("-a", 0.9)},
 	}}
@@ -397,6 +403,7 @@ func TestTheWalkStopsWhenTheCallIsAlreadyEnough(t *testing.T) {
 func TestTheWalkStopsAtTheEscapeHatchAndAtTheRoundLimit(t *testing.T) {
 	p := plan(t)
 	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		{},
 		stageOne("list_directory", 0.95),
 		{"satisfied.0": noul(0.10), "options.0": choice(catalog.NoneKey, 0.85)},
 	}}
@@ -410,7 +417,7 @@ func TestTheWalkStopsAtTheEscapeHatchAndAtTheRoundLimit(t *testing.T) {
 	}
 
 	// A model that never settles must not turn a call into a conversation.
-	scripted := []map[string]typesafe.Answer{stageOne("list_directory", 0.95)}
+	scripted := []map[string]typesafe.Answer{{}, stageOne("list_directory", 0.95)}
 	for round := 0; round < 6; round++ {
 		scripted = append(scripted, map[string]typesafe.Answer{
 			fmt.Sprintf("satisfied.%d", round): noul(0.05),
@@ -432,6 +439,7 @@ func TestTheWalkStopsAtTheEscapeHatchAndAtTheRoundLimit(t *testing.T) {
 func TestAnOptionTheProgramDoesNotDocumentIsIgnored(t *testing.T) {
 	p := plan(t)
 	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		{},
 		stageOne("list_directory", 0.95),
 		{"satisfied.0": noul(0.10), "options.0": choice("--exec=rm -rf /", 0.99)},
 	}}
@@ -457,7 +465,7 @@ func TestContentSearchCanBeLimitedToMatchingFiles(t *testing.T) {
 	answers["search_text.files"] = choice("*.go", 0.93)
 	answers["search_text.files?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.91}
 
-	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, nil, resolve.DecideOptions{})
+	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, nil, false, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -579,7 +587,7 @@ func TestEndToEndThroughTheHTTPClient(t *testing.T) {
 		t.Errorf("server saw %d questions, want %d", len(gotRequest.Questions), len(p.Request.Questions))
 	}
 
-	decision, err := p.Decide(result.Response, []string{"-l"}, resolve.DecideOptions{})
+	decision, err := p.Decide(result.Response, []string{"-l"}, false, resolve.DecideOptions{})
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -608,5 +616,120 @@ func testDocs(t *testing.T) map[string]discover.Docs {
 	return map[string]discover.Docs{
 		"ls": {Program: "ls", Source: "man", Options: discover.ParseMan(read("man-ls.txt"))},
 		"rg": {Program: "rg", Source: "help", Options: discover.ParseHelp(read("help-rg.txt"))},
+	}
+}
+
+// TestAWordThatNamesAProgramBecomesATool is the first filter, and the one that
+// stops the tool space from being a list written in code: the request is read
+// word by word, and a word the model calls a program becomes a tool when this
+// machine actually has it.
+func TestAWordThatNamesAProgramBecomesATool(t *testing.T) {
+	e := testEnv(t)
+	e.Request = "open the current project in zed"
+	// The machine's own command list, which the word filter is checked against.
+	e.Commands = []string{"cat", "ls", "pwd", "zed"}
+	// Its documentation, so the test does not read a manual page.
+	e.Docs = map[string]discover.Docs{"zed": {
+		Program: "zed", Source: "help",
+		Options: []discover.Option{{Flags: []string{"--new"}, Desc: "Open a new window."}},
+	}}
+	p, err := resolve.Build(e)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	words := p.Words
+	zedIndex := -1
+	for i, w := range words {
+		if strings.EqualFold(w, "zed") {
+			zedIndex = i
+		}
+	}
+	if zedIndex < 0 {
+		t.Fatalf("words = %v, want zed among them", words)
+	}
+	wordAnswers := map[string]typesafe.Answer{}
+	for i := range words {
+		wordAnswers[fmt.Sprintf("word.%d", i)] = noul(0.05)
+	}
+	wordAnswers[fmt.Sprintf("word.%d", zedIndex)] = noul(0.97)
+
+	// A call that changes nothing runs: opening an editor on a project leaves
+	// the machine as it was.
+	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		wordAnswers,
+		{"intent": choice("zed", 0.93), "guardrail.tool_is_clear": noul(0.9),
+			"operand": choice(".", 0.9), "operand?": noul(0.94)},
+		{"satisfied.0": noul(0.9)},
+		{"side_effect": noul(0.06)},
+	}}
+	evaluation, err := p.Evaluate(context.Background(), asker)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(evaluation.Programs) != 1 || evaluation.Programs[0] != "zed" {
+		t.Fatalf("programs = %v, want zed", evaluation.Programs)
+	}
+	if evaluation.Decision.Verdict != resolve.VerdictAct {
+		t.Fatalf("verdict = %q (%s), want act", evaluation.Decision.Verdict, evaluation.Decision.Reason)
+	}
+	if got := strings.Join(evaluation.Decision.Argv, " "); got != "zed ." {
+		t.Errorf("argv = %q, want zed .", got)
+	}
+
+	// The tool stage offered it, with the program's own words as description.
+	if _, ok := asker.requests[1].Questions["intent"].(typesafe.ChoiceQuestion).Criteria["zed"]; !ok {
+		t.Error("the tool question should offer the program the request named")
+	}
+
+	// The same call, judged to change something, is refused until told twice.
+	p2, err := resolve.Build(e)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	unsafe := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		wordAnswers,
+		{"intent": choice("zed", 0.93), "guardrail.tool_is_clear": noul(0.9),
+			"operand": choice(".", 0.9), "operand?": noul(0.94)},
+		{"satisfied.0": noul(0.9)},
+		{"side_effect": noul(0.88)},
+	}}
+	evaluation, err = p2.Evaluate(context.Background(), unsafe)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if evaluation.Decision.Verdict != resolve.VerdictBlocked {
+		t.Fatalf("verdict = %q, want blocked for a call that changes things", evaluation.Decision.Verdict)
+	}
+	if !strings.Contains(evaluation.Decision.Reason, "allow-write") {
+		t.Errorf("reason = %q, want it to say how to permit it", evaluation.Decision.Reason)
+	}
+}
+
+// TestAWordIsNotEnoughOnItsOwn: the model may call a word a program, but only
+// this machine can say whether such a command exists.
+func TestAWordIsNotEnoughOnItsOwn(t *testing.T) {
+	e := testEnv(t)
+	e.Request = "open the project in zed"
+	e.Commands = []string{"ls", "pwd"} // no zed on this machine
+	p, err := resolve.Build(e)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	wordAnswers := map[string]typesafe.Answer{}
+	for i := range p.Words {
+		wordAnswers[fmt.Sprintf("word.%d", i)] = noul(0.99)
+	}
+	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
+		wordAnswers,
+		stageOne("report_working_directory", 0.9),
+	}}
+
+	evaluation, err := p.Evaluate(context.Background(), asker)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(evaluation.Programs) != 0 {
+		t.Errorf("programs = %v, want none: zed is not installed here", evaluation.Programs)
 	}
 }

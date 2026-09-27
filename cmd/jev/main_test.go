@@ -227,7 +227,7 @@ func TestADestructiveRequestIsRefused(t *testing.T) {
 	if code != exitUnresolved {
 		t.Fatalf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, exitUnresolved, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "only runs read-only tools") {
+	if !strings.Contains(stderr.String(), "the tool that fits only reads") {
 		t.Errorf("stderr should explain the read-only policy:\n%s", stderr.String())
 	}
 	if strings.Contains(stdout.String(), "main_test.go") {

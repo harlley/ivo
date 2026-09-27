@@ -2,6 +2,7 @@ package discover
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -229,5 +230,77 @@ func TestChooseSourcePrefersHelpAndFallsBackToTheManual(t *testing.T) {
 				t.Fatalf("chose %q (ok=%v), want %q", docs.Source, ok, tc.wantSource)
 			}
 		})
+	}
+}
+
+func TestCommandsAreListedNativelyAndCleanly(t *testing.T) {
+	commands, err := Commands()
+	if err != nil {
+		t.Skipf("no command list on this machine: %v", err)
+	}
+	if len(commands) < 100 {
+		t.Fatalf("listed %d commands, want the shell's command list", len(commands))
+	}
+	seen := map[string]bool{}
+	for _, name := range commands {
+		if seen[name] {
+			t.Errorf("%q is listed twice", name)
+		}
+		seen[name] = true
+		if strings.ContainsAny(name, " /\\") {
+			t.Errorf("%q is not a command name", name)
+		}
+		if _, err := exec.LookPath(name); err != nil {
+			t.Errorf("%q cannot be run as a program", name)
+		}
+	}
+	// The listing is what a person can type, and it is cheap: a shell answers
+	// it in a tenth of a second, where reading every program's summary took
+	// seven seconds for eight of them.
+	if !seen["ls"] {
+		t.Error("ls should be in the shell's command list")
+	}
+}
+
+func TestRetrieveKeepsTheCommandsTheRequestNames(t *testing.T) {
+	commands := []string{"ls", "zed", "rm", "sed", "git", "docker", "cat", "rg"}
+
+	got := Retrieve(commands, "open the current project in zed", 8)
+	if len(got) == 0 {
+		t.Fatal("Retrieve found nothing for a request that names zed")
+	}
+	if got[0].Name != "zed" {
+		t.Fatalf("Retrieve = %v, want zed first", got)
+	}
+	for _, p := range got {
+		if p.Name == "docker" || p.Name == "cat" {
+			t.Errorf("%q shares nothing with the request and should not be offered", p.Name)
+		}
+	}
+
+	// Risk is decided in code, not by the model.
+	got = Retrieve(commands, "remove the directory with rm", 8)
+	if len(got) == 0 || got[0].Name != "rm" {
+		t.Fatalf("Retrieve = %v, want rm first", got)
+	}
+	if got[0].ReadOnly {
+		t.Error("rm must not be marked read-only")
+	}
+
+	if got := Retrieve(commands, "zzz nothing here", 8); len(got) != 0 {
+		t.Errorf("Retrieve = %v, want nothing", got)
+	}
+}
+
+func TestDescribeUsesTheProgramsOwnWords(t *testing.T) {
+	described := Describe([]Program{{Name: "ls", ReadOnly: true}})
+	if len(described) != 1 {
+		t.Fatalf("Describe returned %d programs", len(described))
+	}
+	if described[0].Summary == "" {
+		t.Error("ls should be able to say what it is for")
+	}
+	if strings.HasPrefix(strings.ToLower(described[0].Summary), "usage") {
+		t.Errorf("summary = %q, want a description rather than a usage line", described[0].Summary)
 	}
 }

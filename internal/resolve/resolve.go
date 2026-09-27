@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harlleyoliveira/jev-cli/internal/discover"
+
 	"github.com/harlleyoliveira/jev-cli/internal/catalog"
 	"github.com/harlleyoliveira/jev-cli/internal/env"
 	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
@@ -54,31 +56,55 @@ type Plan struct {
 	Env      *env.Env
 	Tools    []catalog.Tool
 	Bindings map[string]catalog.Binding
-	Request  typesafe.SystemOneRequest
-	// Labels maps a question id to option key -> human description, so the
-	// CLI can explain a low-confidence answer.
+	// Request is the tool stage, assembled once the words have been read.
+	Request typesafe.SystemOneRequest
+	// Labels maps a question id to option key -> human description, so the CLI
+	// can explain a low-confidence answer.
 	Labels map[string]map[string]string
+	// Words are the request's content words. They are the first filter: one
+	// question each asks whether a word names a program, which is how the tool
+	// space stops being a list written in code.
+	Words []string
 }
 
-// Build probes nothing (env is already probed) and assembles the request.
+// Build prepares the plan. The tool question is deliberately not assembled yet:
+// a word of the request may name a program this machine has, and that program
+// becomes one of the options, so the question cannot be written until the words
+// have been read.
 func Build(e *env.Env) (*Plan, error) {
 	tools := catalog.Available(catalog.All(), e)
 	if len(tools) == 0 {
 		return nil, fmt.Errorf("no tool is available in this environment")
 	}
-	bindings := catalog.Bindings(tools, e)
+	plan := &Plan{
+		Env:      e,
+		Tools:    tools,
+		Bindings: catalog.Bindings(tools, e),
+		Words:    discover.ContentWords(e.Request),
+	}
+	// Assembled once with the shaped tools, and again in Evaluate when the word
+	// filter has had its say. Assembling is pure work on the catalog, so doing
+	// it twice costs nothing and keeps a plan valid on its own.
+	if err := plan.assemble(); err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+// assemble writes the tool stage: the tool question, the operands it needs, and
+// the guardrails.
+func (p *Plan) assemble() error {
+	questions := map[string]any{}
+	labels := map[string]map[string]string{}
+
+	choice := catalog.ToolQuestion(p.Tools)
+	questions["intent"] = choice
+	labels["intent"] = criteriaLabels(choice)
 
 	// The catalog owns the question set. The plan and the filler therefore
 	// cannot disagree about which questions have to be answered, which is a bug
 	// that has happened once already.
-	questions := map[string]any{}
-	labels := map[string]map[string]string{}
-
-	choice := catalog.ToolQuestion(tools)
-	questions["intent"] = choice
-	labels["intent"] = criteriaLabels(choice)
-
-	for qid, question := range catalog.Questions(tools, bindings, e) {
+	for qid, question := range catalog.Questions(p.Tools, p.Bindings, p.Env) {
 		questions[qid] = question
 		labels[qid] = criteriaLabels(question)
 	}
@@ -86,17 +112,64 @@ func Build(e *env.Env) (*Plan, error) {
 		questions[qid] = question
 	}
 
-	req := typesafe.SystemOneRequest{State: buildState(e), Model: typesafe.DefaultModel, Questions: questions}
-	if err := req.Validate(); err != nil {
-		return nil, err
+	request := typesafe.SystemOneRequest{State: buildState(p.Env), Model: typesafe.DefaultModel, Questions: questions}
+	if err := request.Validate(); err != nil {
+		return err
 	}
-	return &Plan{
-		Env:      e,
-		Tools:    tools,
-		Bindings: bindings,
-		Request:  req,
-		Labels:   labels,
-	}, nil
+	p.Request = request
+	p.Labels = labels
+	return nil
+}
+
+// wordRequest asks about every content word at once. The words that come back
+// above the line are looked up on this machine, and the ones that exist become
+// tools.
+func (p *Plan) wordRequest() (typesafe.SystemOneRequest, bool) {
+	if len(p.Words) == 0 {
+		return typesafe.SystemOneRequest{}, false
+	}
+	questions := map[string]any{}
+	for i, word := range p.Words {
+		questions[catalog.WordQuestionID(i)] = catalog.WordQuestion(word)
+	}
+	return typesafe.SystemOneRequest{
+		State:     buildState(p.Env),
+		Model:     typesafe.DefaultModel,
+		Questions: questions,
+	}, true
+}
+
+// readWords turns the answer to the word filter into tools. A word the model
+// calls a program still has to exist on this machine, so the model can pick a
+// command but never invent one.
+func (p *Plan) readWords(response *typesafe.SystemOneResponse) []string {
+	var named []string
+	for i, word := range p.Words {
+		answer, ok := response.Answers[catalog.WordQuestionID(i)]
+		if !ok || answer.Noul < catalog.WordThreshold {
+			continue
+		}
+		name := p.Env.CommandName(word)
+		if name == "" {
+			continue
+		}
+		if _, seen := p.Bindings[name]; seen {
+			continue
+		}
+		described := discover.Describe([]discover.Program{{Name: name, ReadOnly: discover.IsReadOnly(name)}})
+		if len(described) == 0 {
+			continue
+		}
+		tool := catalog.NamedProgram(described[0])
+		binding, ok := tool.Bind(p.Env)
+		if !ok {
+			continue
+		}
+		p.Tools = append(p.Tools, tool)
+		p.Bindings[name] = binding
+		named = append(named, name)
+	}
+	return named
 }
 
 // buildState sends a filtered view of the machine. Counting is done here, in
@@ -171,6 +244,14 @@ type Evaluation struct {
 	// FlagAnswers is what each round answered, kept for diagnosis: when a call
 	// misses the option it needed, this is where to look.
 	FlagAnswers map[string]typesafe.Answer
+	// Programs are the commands the word filter found on this machine, and
+	// WordAnswers is what it answered.
+	Programs    []string
+	WordAnswers map[string]typesafe.Answer
+	// SideEffect is the judgment about a call built from a tool that is not
+	// read-only, and CallIsSafe is what it decided.
+	SideEffect *typesafe.Answer
+	CallIsSafe bool
 }
 
 // Evaluate runs the stages a call needs. The tool is chosen first, and only
@@ -179,30 +260,55 @@ type Evaluation struct {
 // which option to add next. Both questions ride in the same request, so a round
 // costs one round trip whatever the answer turns out to be.
 func (p *Plan) Evaluate(ctx context.Context, client Asker) (*Evaluation, error) {
+	evaluation := &Evaluation{}
+
+	// Stage one: which words of the request name a program? Until that is
+	// answered the tool question cannot be written, because a named program is
+	// one of its options.
+	if request, ok := p.wordRequest(); ok {
+		response, err := client.SystemOne(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		evaluation.Usage = response.Response.Usage
+		evaluation.Latency = response.Latency
+		evaluation.Stages = 1
+		evaluation.Model = response.Response.Model
+		evaluation.WordAnswers = response.Response.Answers
+		evaluation.Programs = p.readWords(response.Response)
+	}
+
+	if err := p.assemble(); err != nil {
+		return nil, err
+	}
 	first, err := client.SystemOne(ctx, p.Request)
 	if err != nil {
 		return nil, err
 	}
-	evaluation := &Evaluation{
-		Usage:   first.Response.Usage,
-		Latency: first.Latency,
-		Stages:  1,
-		Model:   first.Response.Model,
+	evaluation.Usage.InputTokens += first.Response.Usage.InputTokens
+	evaluation.Usage.OutputTokens += first.Response.Usage.OutputTokens
+	evaluation.Latency += first.Latency
+	evaluation.Stages++
+	if evaluation.Model == "" {
+		evaluation.Model = first.Response.Model
+	}
+
+	// One place counts what every further request costs.
+	ask := func(request typesafe.SystemOneRequest) (*typesafe.SystemOneResponse, error) {
+		result, err := client.SystemOne(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		evaluation.Usage.InputTokens += result.Response.Usage.InputTokens
+		evaluation.Usage.OutputTokens += result.Response.Usage.OutputTokens
+		evaluation.Latency += result.Latency
+		evaluation.Stages++
+		return result.Response, nil
 	}
 
 	toolName := chosenTool(first.Response)
 	if toolName != "" {
-		rounds, flags, answers, err := p.walkOptions(toolName, first.Response.Answers, func(request typesafe.SystemOneRequest) (*typesafe.SystemOneResponse, error) {
-			result, err := client.SystemOne(ctx, request)
-			if err != nil {
-				return nil, err
-			}
-			evaluation.Usage.InputTokens += result.Response.Usage.InputTokens
-			evaluation.Usage.OutputTokens += result.Response.Usage.OutputTokens
-			evaluation.Latency += result.Latency
-			evaluation.Stages++
-			return result.Response, nil
-		})
+		rounds, flags, answers, err := p.walkOptions(toolName, first.Response.Answers, ask)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +317,28 @@ func (p *Plan) Evaluate(ctx context.Context, client Asker) (*Evaluation, error) 
 		evaluation.FlagAnswers = answers
 	}
 
-	decision, err := p.Decide(first.Response, evaluation.Flags, DecideOptions{})
+	// A tool nobody classified has to pass one more question, asked about the
+	// call that was built rather than about the request.
+	if tool, ok := p.tool(chosenTool(first.Response)); ok && !tool.ReadOnly && len(evaluation.Flags) >= 0 {
+		if binding, ok := p.Bindings[tool.Name]; ok {
+			asked, err := ask(typesafe.SystemOneRequest{
+				State: p.Request.State,
+				Model: p.Request.Model,
+				Questions: map[string]any{
+					catalog.SideEffectQuestionID: catalog.SideEffectQuestion(p.candidate(tool.Name, binding, first.Response.Answers, evaluation.Flags)),
+				},
+			})
+			if err != nil {
+				return nil, err
+			}
+			if answer, ok := asked.Answers[catalog.SideEffectQuestionID]; ok {
+				evaluation.SideEffect = &answer
+				evaluation.CallIsSafe = answer.Noul < catalog.SideEffectThreshold
+			}
+		}
+	}
+
+	decision, err := p.Decide(first.Response, evaluation.Flags, evaluation.CallIsSafe, DecideOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +351,14 @@ func (p *Plan) Evaluate(ctx context.Context, client Asker) (*Evaluation, error) 
 // It stops at the first yes, at the escape hatch, or at the round limit.
 func (p *Plan) walkOptions(toolName string, operands map[string]typesafe.Answer, ask askFunc) (int, []string, map[string]typesafe.Answer, error) {
 	binding, ok := p.Bindings[toolName]
-	if !ok || len(binding.Options) == 0 {
+	if !ok {
+		return 0, nil, nil, nil
+	}
+	// The winner's options are read now, and only the winner's: for a program
+	// this machine happens to have, that is the first time its documentation is
+	// needed at all.
+	options := catalog.DocumentedOptions(p.Env, binding.Discover)
+	if len(options) == 0 {
 		return 0, nil, nil, nil
 	}
 
@@ -237,7 +371,7 @@ func (p *Plan) walkOptions(toolName string, operands map[string]typesafe.Answer,
 			Model: p.Request.Model,
 			Questions: map[string]any{
 				catalog.SatisfiedQuestionID(round): catalog.SatisfiedQuestion(p.candidate(toolName, binding, operands, flags)),
-				catalog.OptionQuestionID(round):    catalog.OptionQuestion(binding.Options, flags, round),
+				catalog.OptionQuestionID(round):    catalog.OptionQuestion(options, flags, round),
 			},
 		}
 		response, err := ask(request)
@@ -256,7 +390,7 @@ func (p *Plan) walkOptions(toolName string, operands map[string]typesafe.Answer,
 			return rounds, flags, answers, nil
 		}
 
-		next, ok := nextOption(response.Answers, binding, flags, round)
+		next, ok := nextOption(response.Answers, options, flags, round)
 		if !ok {
 			return rounds, flags, answers, nil
 		}
@@ -282,13 +416,13 @@ func (p *Plan) candidate(toolName string, binding catalog.Binding, operands map[
 
 // nextOption reads one round's option answer, skipping anything the program
 // does not document and anything already chosen.
-func nextOption(answers map[string]typesafe.Answer, binding catalog.Binding, flags []string, round int) (string, bool) {
+func nextOption(answers map[string]typesafe.Answer, options []discover.Option, flags []string, round int) (string, bool) {
 	answer, ok := answers[catalog.OptionQuestionID(round)]
 	if !ok || answer.Choice == catalog.NoneKey {
 		return "", false
 	}
 	documented := false
-	for _, option := range binding.Options {
+	for _, option := range options {
 		if len(option.Flags) > 0 && option.Flags[0] == answer.Choice {
 			documented = true
 			break
@@ -385,7 +519,7 @@ func (o DecideOptions) withDefaults() DecideOptions {
 // Decide reads the answers. The order of the checks is the order of the
 // questions that matter: first "should anything run at all", then "which
 // command", then "did every argument resolve".
-func (p *Plan) Decide(res *typesafe.SystemOneResponse, flags []string, opts DecideOptions) (*Decision, error) {
+func (p *Plan) Decide(res *typesafe.SystemOneResponse, flags []string, callIsSafe bool, opts DecideOptions) (*Decision, error) {
 	opts = opts.withDefaults()
 
 	intent, ok := res.Answers["intent"]
@@ -420,21 +554,11 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, flags []string, opts Deci
 		return d, nil
 	}
 
-	// 2. This catalog only reads. A request that asks for a change is refused
-	//    rather than answered with something adjacent.
-	if destructive := d.Guardrails["guardrail.destructive_request"].Noul; destructive >= opts.DestructiveThreshold {
-		d.Verdict = VerdictUnsupported
-		d.Reason = fmt.Sprintf(
-			"the request involves changing data or the system (p=%.2f), and this CLI only runs read-only tools",
-			destructive)
-		return d, nil
-	}
-	if d.Severity >= opts.SeverityThreshold {
-		d.Verdict = VerdictBlocked
-		d.Reason = fmt.Sprintf("severidade estimada %.2f atingiu o limite %.2f", d.Severity, opts.SeverityThreshold)
-		return d, nil
-	}
-
+	// 2. A request that asks for a change cannot be answered by a tool that
+	//    only reads, and refusing it later is what keeps the layer from
+	//    answering with something adjacent. It is checked after the tool is
+	//    known, because a program this machine happens to have may be exactly
+	//    what the request wants.
 	// 3. Intent. The escape hatch carries real signal: a first place that is
 	//    barely ahead of "none of these" is not a decision.
 	//
@@ -469,10 +593,27 @@ func (p *Plan) Decide(res *typesafe.SystemOneResponse, flags []string, opts Deci
 		// The escape hatch won, so there is no tool to offer.
 		return d, nil
 	}
-	if !tool.ReadOnly && !opts.AllowWrite {
+	if !tool.ReadOnly && !opts.AllowWrite && !callIsSafe {
 		d.Verdict = VerdictBlocked
-		d.Reason = "this tool is not read-only; use --allow-write to permit it"
+		d.Reason = fmt.Sprintf(
+			"%s is not a read-only tool and this call did not come back clean; use --allow-write to permit it",
+			tool.Name)
 		return d, nil
+	}
+	// Only now, with a tool in hand: a request for a change answered by a tool
+	// that cannot make one is refused rather than approximated.
+	if tool.ReadOnly {
+		if destructive := d.Guardrails["guardrail.destructive_request"].Noul; destructive >= opts.DestructiveThreshold {
+			d.Verdict = VerdictUnsupported
+			d.Reason = fmt.Sprintf(
+				"the request asks for a change (p=%.2f) and the tool that fits only reads", destructive)
+			return d, nil
+		}
+		if d.Severity >= opts.SeverityThreshold {
+			d.Verdict = VerdictBlocked
+			d.Reason = fmt.Sprintf("severity estimated at %.2f, at or above the %.2f limit", d.Severity, opts.SeverityThreshold)
+			return d, nil
+		}
 	}
 
 	filled, err := catalog.Fill(*tool, p.Bindings[tool.Name], res.Answers, flags, p.Env)

@@ -60,7 +60,10 @@ type Docs struct {
 	// Bytes is how much text that source took, which is what the source choice
 	// is made on: the option list becomes the criteria of the questions the
 	// model answers, so a shorter source is a cheaper and less noisy one.
-	Bytes   int
+	Bytes int
+	// Summary is the first thing the source says about the program, which is
+	// what the model sees when choosing between programs.
+	Summary string
 	Options []Option
 }
 
@@ -101,12 +104,14 @@ func Load(program string) (Docs, error) {
 	if text, err := output(program, "--help"); err == nil {
 		help.Options = ParseHelp(text)
 		help.Bytes = len(text)
+		help.Summary = summaryOf(text)
 	}
 
 	manual := Docs{Program: program, Source: "man"}
 	if text, err := output("man", "-P", "cat", program); err == nil {
 		manual.Options = ParseMan(text)
 		manual.Bytes = len(text)
+		manual.Summary = summaryOf(text)
 	}
 
 	docs, ok := chooseSource(help, manual, len(help.Options) > 0, len(manual.Options) > 0)
@@ -360,8 +365,22 @@ func cachePath(program string) string {
 	return filepath.Join(dir, "jev", "docs", program+".json")
 }
 
+// summaryOf takes the first line that says something, which is how a program
+// introduces itself in its help or its manual. Short usage lines are skipped:
+// "usage: zed" says less than nothing.
+func summaryOf(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) < 12 || strings.HasPrefix(strings.ToLower(line), "usage") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
 // cacheVersion invalidates entries written by an older reader.
-const cacheVersion = 2
+const cacheVersion = 3
 
 func readCache(program string) (Docs, bool) {
 	path := cachePath(program)
