@@ -323,3 +323,81 @@ func TestEndToEndThroughTheHTTPClient(t *testing.T) {
 		t.Errorf("usage did not survive the round trip: %+v", result.Response.Usage)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The objective's own invariants, asserted directly.
+// ---------------------------------------------------------------------------
+
+// TestTheRequestUsesOnlyTheThreePrimitives pins down "using only jev's
+// primitives, with no text generation": the wire body has exactly the three
+// top-level fields the API defines, and every question is one of noul, choice
+// or score with instructions attached. There is no field anywhere in which a
+// caller could ask the model to produce a string.
+func TestTheRequestUsesOnlyTheThreePrimitives(t *testing.T) {
+	p := plan(t, resolve.Options{})
+
+	raw, err := json.Marshal(p.Request)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, want := range []string{"state", "model", "questions"} {
+		if _, ok := top[want]; !ok {
+			t.Errorf("request is missing the %q field", want)
+		}
+	}
+	for key := range top {
+		switch key {
+		case "state", "model", "questions":
+		default:
+			t.Errorf("unexpected top-level field %q — the endpoint takes exactly state, model and questions", key)
+		}
+	}
+
+	var decoded struct {
+		Questions map[string]struct {
+			Type         string          `json:"type"`
+			Instructions json.RawMessage `json:"instructions"`
+			Criteria     json.RawMessage `json:"criteria"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal questions: %v", err)
+	}
+	if len(decoded.Questions) < 5 {
+		t.Fatalf("only %d questions; the request should carry the whole battery", len(decoded.Questions))
+	}
+
+	for id, q := range decoded.Questions {
+		switch q.Type {
+		case "noul", "choice", "score":
+		default:
+			t.Errorf("question %q has type %q, which is not one of the three System One primitives", id, q.Type)
+		}
+		if len(q.Instructions) == 0 {
+			t.Errorf("question %q has no instructions", id)
+		}
+		if q.Type != "noul" && len(q.Criteria) == 0 {
+			t.Errorf("question %q has no criteria", id)
+		}
+	}
+
+	// Every Choice must stay inside the documented 255-option ceiling, or the
+	// API answers 422 instead of an answer.
+	for id, q := range p.Request.Questions {
+		choice, ok := q.(typesafe.ChoiceQuestion)
+		if !ok {
+			continue
+		}
+		if len(choice.Criteria) < 2 {
+			t.Errorf("choice %q has %d options; a choice needs at least 2", id, len(choice.Criteria))
+		}
+		if len(choice.Criteria) > typesafe.MaxChoiceOptions {
+			t.Errorf("choice %q has %d options, over the %d ceiling", id, len(choice.Criteria), typesafe.MaxChoiceOptions)
+		}
+	}
+}

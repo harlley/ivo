@@ -342,3 +342,177 @@ func TestQuestionIdsAreDeduplicatedAcrossCommands(t *testing.T) {
 		t.Error("intent is added by resolve, not by Questions")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Invariants that the whole design rests on. These are the tests that would
+// have to fail for jev-cli to become "a model that writes shell commands".
+// ---------------------------------------------------------------------------
+
+// authoredTokens is every token the catalog itself wrote down: template
+// literals, flag token groups, option arguments and empty-value fallbacks.
+func authoredTokens(cmdID string, spec catalog.Spec, e *env.Env) map[string]bool {
+	set := map[string]bool{}
+	for _, tok := range spec.Argv {
+		if !isPlaceholderToken(tok) {
+			set[tok] = true
+		}
+	}
+	for _, slot := range spec.Slots {
+		for _, argv := range slot.TrueArgvByCmd {
+			for _, tok := range argv {
+				set[tok] = true
+			}
+		}
+		for _, opt := range optionsOf(slot, e) {
+			for _, tok := range append(append([]string{}, opt.Argv...), slot.EmptyFallback...) {
+				set[tok] = true
+			}
+		}
+		for _, tok := range slot.EmptyFallback {
+			set[tok] = true
+		}
+	}
+	delete(set, "")
+	return set
+}
+
+func isPlaceholderToken(tok string) bool {
+	return len(tok) > 2 && tok[0] == '{' && tok[len(tok)-1] == '}'
+}
+
+func optionsOf(slot catalog.Slot, e *env.Env) []catalog.Value {
+	if slot.OptionsFor != nil {
+		return slot.OptionsFor(e)
+	}
+	return slot.Options
+}
+
+// answerCombos sweeps every slot across every value it can take, so the sweep
+// covers the flags together, not just one at a time.
+func answerCombos(spec catalog.Spec, cmdID string, e *env.Env) []map[string]typesafe.Answer {
+	combos := []map[string]typesafe.Answer{{}}
+	const cap = 4000
+
+	for _, slot := range spec.Slots {
+		qid := slot.QuestionID(cmdID)
+		var variants []map[string]typesafe.Answer
+
+		switch {
+		case slot.IsFlag():
+			variants = []map[string]typesafe.Answer{
+				{qid: noul(0)},
+				{qid: noul(1)},
+			}
+		case slot.Optional:
+			anyOption := catalog.NoneKey
+			for _, opt := range optionsOf(slot, e) {
+				anyOption = opt.Key
+				break
+			}
+			variants = []map[string]typesafe.Answer{
+				{qid: choice(anyOption, 1), qid + "?": noul(0)},
+			}
+			for _, opt := range optionsOf(slot, e) {
+				variants = append(variants, map[string]typesafe.Answer{qid: choice(opt.Key, 1), qid + "?": noul(1)})
+			}
+		default:
+			for _, opt := range optionsOf(slot, e) {
+				variants = append(variants, map[string]typesafe.Answer{qid: choice(opt.Key, 1)})
+			}
+		}
+
+		next := make([]map[string]typesafe.Answer, 0, len(combos)*len(variants))
+		for _, base := range combos {
+			for _, v := range variants {
+				merged := map[string]typesafe.Answer{}
+				for k, val := range base {
+					merged[k] = val
+				}
+				for k, val := range v {
+					merged[k] = val
+				}
+				next = append(next, merged)
+			}
+		}
+		combos = next
+		if len(combos) > cap {
+			combos = combos[:cap]
+		}
+	}
+	return combos
+}
+
+func TestEveryTokenInArgvWasAuthoredHere(t *testing.T) {
+	e := testEnv()
+	all := catalog.All()
+	specs := catalog.Specs(all, e)
+
+	for _, cmd := range all {
+		spec, ok := specs[cmd.ID]
+		if !ok {
+			t.Fatalf("%s: no spec", cmd.ID)
+		}
+		allowed := authoredTokens(cmd.ID, spec, e)
+		combos := answerCombos(spec, cmd.ID, e)
+
+		for n, combo := range combos {
+			answers := answersFor(spec, cmd.ID, e)
+			for k, v := range combo {
+				answers[k] = v
+			}
+			got, err := catalog.Assemble(cmd, spec, answers, e, nil)
+			if err != nil {
+				t.Fatalf("%s combo %d: %v", cmd.ID, n, err)
+			}
+			for i, tok := range got.Argv {
+				if !allowed[tok] {
+					t.Fatalf("%s combo %d: token %q is not authored anywhere in the catalog (argv: %v)",
+						cmd.ID, n, tok, got.Argv)
+				}
+				if i == 0 && isShell(tok) {
+					t.Fatalf("%s combo %d: argv[0] is a shell (%q)", cmd.ID, n, tok)
+				}
+			}
+			if len(got.Missing) == 0 && len(got.Argv) == 0 {
+				t.Fatalf("%s combo %d: resolved with no missing slots but produced no argv", cmd.ID, n)
+			}
+		}
+		t.Logf("%s: %d combinations, all tokens authored", cmd.ID, len(combos))
+	}
+}
+
+func isShell(program string) bool {
+	switch program {
+	case "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "env", "xargs", "eval", "exec", "sudo":
+		return true
+	}
+	return false
+}
+
+func TestNoCommandCanReachAShell(t *testing.T) {
+	e := testEnv()
+	for _, cmd := range catalog.All() {
+		for _, needs := range cmd.Needs {
+			if isShell(needs) {
+				t.Errorf("%s declares a shell as a dependency: %q", cmd.ID, needs)
+			}
+		}
+	}
+	for _, bin := range catalog.Allowlist(catalog.Specs(catalog.All(), e), e) {
+		if isShell(bin) {
+			t.Errorf("the allowlist lets a shell through: %q", bin)
+		}
+	}
+	// And nothing in any template asks a program to run a command string.
+	for _, cmd := range catalog.All() {
+		spec, ok := cmd.Build(e)
+		if !ok {
+			continue
+		}
+		for _, tok := range spec.Argv {
+			if tok == "-c" {
+				t.Errorf("%s has a -c token, which is how a shell is told to run a string", cmd.ID)
+			}
+		}
+	}
+}
