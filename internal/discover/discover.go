@@ -28,6 +28,10 @@ import (
 // Option is one option a program documents about itself, or, when it names a
 // subcommand, one command that program offers.
 type Option struct {
+	// AfterOperand identifies expression predicates following the positional input.
+	AfterOperand bool
+	// Values are literal argument choices documented by the program.
+	Values []OptionValue
 	// Flags are the spellings, shortest first: ["-l"], or ["-a", "--all"].
 	Flags []string
 	// Argv is what choosing this contributes to the command line, which is the
@@ -39,6 +43,11 @@ type Option struct {
 	Arg string
 	// Desc is the program's own description, flattened into one paragraph.
 	Desc string
+}
+
+type OptionValue struct {
+	Value string
+	Desc  string
 }
 
 // Key is the identifier a question uses for this option: the tokens themselves,
@@ -571,6 +580,15 @@ func Candidates(docs Docs, request string, values NamedValues, limit int) []Opti
 	}
 
 	for _, option := range docs.Options {
+		if len(option.Values) > 0 && !option.Numeric() {
+			for _, value := range option.Values {
+				bound := option
+				bound.Argv = []string{option.Flags[0], value.Value}
+				bound.Desc = option.Desc + " Value " + value.Value + ": " + value.Desc
+				add(bound)
+			}
+			continue
+		}
 		if option.Bool() {
 			option.Argv = []string{option.Flags[0]}
 			add(option)
@@ -601,7 +619,14 @@ func Candidates(docs Docs, request string, values NamedValues, limit int) []Opti
 		case kindPattern:
 			spread(option, values.Patterns)
 		case kindText:
-			spread(option, values.Terms)
+			textValues := append([]string{}, values.Terms...)
+			description := strings.ToLower(option.Desc)
+			placeholder := strings.ToLower(option.Arg)
+			regex := strings.Contains(description, "regular expression") || strings.Contains(description, "regex") || strings.Contains(placeholder, "regex")
+			if !regex {
+				textValues = append(append([]string{}, values.Patterns...), textValues...)
+			}
+			spread(option, textValues)
 		}
 	}
 	return out
@@ -640,7 +665,7 @@ func valueKind(arg string) string {
 	normalized := strings.ToLower(strings.Join(strings.Fields(arg), ""))
 	normalized = strings.Trim(normalized, ".<>[]")
 	switch {
-	case countKind.MatchString(normalized):
+	case countKind.MatchString(strings.SplitN(normalized, "[", 2)[0]):
 		return kindCount
 	case pathKind.MatchString(normalized):
 		return kindPath
@@ -784,8 +809,7 @@ func WordCandidates(request string) []string {
 // ---------------------------------------------------------------------------
 
 // ContentWords keeps the words of a phrase that carry meaning, dropping the
-// ones every phrase contains. The phrase is not assumed to be English, so the
-// list covers Portuguese as well.
+// English function words and common action words.
 func ContentWords(text string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -803,27 +827,8 @@ func ContentWords(text string) []string {
 	return out
 }
 
-// stopwords is the only non-English data in this codebase, and it is here so a
-// Portuguese phrase is filtered as cleanly as an English one.
+// stopwords removes English function words and common command-request wording.
 var stopwords = map[string]bool{
-	"as": true, "os": true, "de": true, "do": true, "da": true, "dos": true, "das": true,
-	"em": true, "no": true, "na": true, "nos": true, "nas": true, "um": true, "uma": true,
-	"que": true, "qual": true, "quais": true, "para": true, "por": true, "com": true,
-	"sem": true, "ou": true, "se": true, "meu": true, "minha": true, "meus": true,
-	"minhas": true, "este": true, "esta": true, "esse": true, "essa": true, "isso": true,
-	"nesse": true, "nessa": true, "neste": true, "nesta": true, "desse": true,
-	"dessa": true, "aquele": true, "aquela": true, "seu": true, "sua": true, "seus": true,
-	"suas": true, "ser": true, "sao": true, "são": true, "foi": true, "tem": true,
-	"ter": true, "mais": true, "muito": true, "pouco": true, "nao": true, "não": true,
-	"sim": true, "ja": true, "já": true, "ate": true, "até": true, "sobre": true,
-	"entre": true, "depois": true, "antes": true, "aqui": true, "ali": true,
-	"liste": true, "listar": true, "mostre": true, "mostrar": true, "procure": true,
-	"procurar": true, "busque": true, "buscar": true, "encontre": true, "encontrar": true,
-	"quero": true, "queria": true, "veja": true, "conte": true, "contar": true,
-	"quantas": true, "quantos": true, "quanto": true, "quanta": true, "onde": true,
-	"como": true, "quando": true, "arquivo": true, "arquivos": true, "diretorio": true,
-	"diretório": true, "pasta": true, "pastas": true, "todos": true, "todas": true,
-	"todo": true, "toda": true,
 	"the": true, "an": true, "of": true, "in": true, "on": true, "at": true, "to": true,
 	"for": true, "with": true, "and": true, "is": true, "are": true, "this": true,
 	"that": true, "these": true, "those": true, "me": true, "my": true, "show": true,
@@ -885,7 +890,7 @@ func summaryOf(text string) string {
 }
 
 // cacheVersion invalidates entries written by an older reader.
-const cacheVersion = 12
+const cacheVersion = 14
 
 func readCache(program string) (Docs, bool) {
 	path := cachePath(program)

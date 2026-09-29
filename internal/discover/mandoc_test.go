@@ -192,3 +192,41 @@ func TestSynopsisSuppliesRequiredOptionArgument(t *testing.T) {
 		}
 	}
 }
+
+func TestExpressionPredicatesAndValuesComeFromTheManual(t *testing.T) {
+	src := `<section><h1 id="SYNOPSIS">SYNOPSIS</h1>
+ <var class="Ar">path</var> [<var class="Ar">expression</var>]</section>
+ <dl><dt><code class="Ic">-type</code> <var class="Ar">t</var></dt>
+ <dd>Match the specified type.
+ <dl><dt><code class="Cm">f</code></dt><dd>regular file</dd></dl>
+ </dd></dl>`
+	options := ParseManHTML(src)
+	if len(options) != 1 || !options[0].AfterOperand || len(options[0].Values) != 1 || options[0].Values[0].Value != "f" {
+		t.Fatalf("lost documented grammar or values: %+v", options)
+	}
+	candidates := Candidates(Docs{Options: options}, "find regular files", NamedValues{}, 20)
+	if len(candidates) != 1 || candidates[0].Key() != "-type f" {
+		t.Fatalf("documented type not offered: %+v", candidates)
+	}
+}
+
+func TestDocumentedValuesAlsoWorkForOrdinaryOptions(t *testing.T) {
+	src := `<section><h1 id="SYNOPSIS">SYNOPSIS</h1>report [options]</section>
+ <dl><dt><code class="Fl">--format</code> <var class="Ar">format</var></dt>
+ <dd>Select the output format.
+ <dl><dt><code class="Cm">json</code></dt><dd>structured output</dd>
+ <dt><code class="Cm">csv</code></dt><dd>tabular output</dd></dl>
+ </dd></dl>`
+	options := ParseManHTML(src)
+	if len(options) != 1 || options[0].AfterOperand {
+		t.Fatalf("ordinary option classified as expression: %+v", options)
+	}
+	candidates := Candidates(Docs{Options: options}, "show a report", NamedValues{}, 20)
+	keys := []string{}
+	for _, candidate := range candidates {
+		keys = append(keys, candidate.Key())
+	}
+	if strings.Join(keys, "|") != "--format json|--format csv" {
+		t.Fatalf("lost documented format choices: %v", keys)
+	}
+}

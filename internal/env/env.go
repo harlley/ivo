@@ -327,7 +327,7 @@ var extensionWords = map[string]string{
 	"go": ".go", "golang": ".go", "python": ".py", "py": ".py", "javascript": ".js",
 	"js": ".js", "typescript": ".ts", "ts": ".ts", "markdown": ".md", "md": ".md",
 	"json": ".json", "yaml": ".yaml", "yml": ".yaml", "toml": ".toml", "text": ".txt",
-	"texto": ".txt", "txt": ".txt", "shell": ".sh", "sh": ".sh", "bash": ".sh",
+	"txt": ".txt", "shell": ".sh", "sh": ".sh", "bash": ".sh",
 	"html": ".html", "css": ".css", "sql": ".sql", "rust": ".rs", "rs": ".rs",
 	"java": ".java", "ruby": ".rb", "rb": ".rb", "php": ".php", "c": ".c",
 	"cpp": ".cpp", "csv": ".csv", "xml": ".xml", "mod": ".mod",

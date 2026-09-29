@@ -574,7 +574,7 @@ func SatisfiedQuestion(candidate string) model.Question {
 		map[string]any{
 			"candidate": candidate,
 			"question":  "Is `candidate` a complete command-line response to the request?",
-			"focus":     "For an information request, printing the relevant measurements or records in the program's native format is sufficient. Do not require a prose answer, a derived summary, or units the user did not specify. Use the selected program's documentation and default behavior. Reject missing explicit counts, filters, ordering, actions or other qualifiers. Distinguish options that enable an output from options that only modify an already enabled output. A modifier does not enable the output it modifies. Reject missing required option values and extra operands that narrow or change the requested task. Ordinary words describing the action are not file names, revisions, patterns or option values.",
+			"focus":     "For an information request, printing the relevant measurements or records in the program's native format is sufficient. Do not require a prose answer, a derived summary, or units the user did not specify. Use the selected program's documentation and default behavior. For recursive searches for regular files, a name pattern alone does not exclude directories; require the documented file-type restriction. Reject missing explicit counts, filters, ordering, actions or other qualifiers. Distinguish options that enable an output from options that only modify an already enabled output. A modifier does not enable the output it modifies. Reject missing required option values and extra operands that narrow or change the requested task. Ordinary words describing the action are not file names, revisions, patterns or option values.",
 		},
 		satisfactionCriteria(),
 	)
@@ -592,7 +592,7 @@ func VerifyQuestion(candidate string) model.Question {
 		map[string]any{
 			"candidate": candidate,
 			"question":  "Is `candidate` a complete command-line response to the request?",
-			"focus":     "For an information request, printing the relevant measurements or records in the program's native format is sufficient. Do not require a prose answer, a derived summary, or units the user did not specify. Use the selected program's documentation and default behavior. Reject missing explicit counts, filters, ordering, actions or other qualifiers. Distinguish options that enable an output from options that only modify an already enabled output. A modifier does not enable the output it modifies. Reject missing required option values and extra operands that narrow or change the requested task. Ordinary words describing the action are not file names, revisions, patterns or option values.",
+			"focus":     "For an information request, printing the relevant measurements or records in the program's native format is sufficient. Do not require a prose answer, a derived summary, or units the user did not specify. Use the selected program's documentation and default behavior. For recursive searches for regular files, a name pattern alone does not exclude directories; require the documented file-type restriction. Reject missing explicit counts, filters, ordering, actions or other qualifiers. Distinguish options that enable an output from options that only modify an already enabled output. A modifier does not enable the output it modifies. Reject missing required option values and extra operands that narrow or change the requested task. Ordinary words describing the action are not file names, revisions, patterns or option values.",
 		},
 		satisfactionCriteria(),
 	)
@@ -914,7 +914,7 @@ func Fill(tool Tool, binding Binding, answers map[string]model.Answer, flags []s
 		}
 	}
 
-	var chosenFlags []string
+	var chosenFlags, predicates []string
 	for i, key := range flags {
 		if option, ok := answerOptions[key]; ok && option.ConflictsWith(flags[:i]) {
 			return Result{}, fmt.Errorf("catalog: conflicting repeated option %q", key)
@@ -923,7 +923,11 @@ func Fill(tool Tool, binding Binding, answers map[string]model.Answer, flags []s
 		if !ok {
 			return Result{}, fmt.Errorf("catalog: %q is not an option %s documents", key, binding.Discover)
 		}
-		chosenFlags = append(chosenFlags, tokens...)
+		if option, ok := answerOptions[key]; ok && option.AfterOperand {
+			predicates = append(predicates, tokens...)
+		} else {
+			chosenFlags = append(chosenFlags, tokens...)
+		}
 	}
 
 	// Bind: a placeholder contributes zero or more whole tokens, a literal
@@ -952,6 +956,7 @@ func Fill(tool Tool, binding Binding, answers map[string]model.Answer, flags []s
 		}
 	}
 
+	argv = append(argv, predicates...)
 	return Result{Call: call, Argv: argv, Notes: notes, Unfilled: unfilled, Output: binding.Output}, nil
 }
 

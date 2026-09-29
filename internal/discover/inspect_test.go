@@ -32,7 +32,7 @@ func TestDescriptionExcerptRetainsPurposeAndIsBounded(t *testing.T) {
 	}
 	long := make([]rune, 2000)
 	for i := range long {
-		long[i] = 'á'
+		long[i] = '界'
 	}
 	if len([]rune(descriptionOf(string(long)))) != 1500 {
 		t.Fatal("description must be bounded without splitting unicode")

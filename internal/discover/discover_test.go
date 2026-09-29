@@ -174,12 +174,12 @@ func TestContentWordsDropsWhatEveryPhraseHas(t *testing.T) {
 		t.Errorf("ContentWords dropped the word that matters: %v", got)
 	}
 
-	// The phrase is not assumed to be English.
-	got = ContentWords("liste todos os arquivos desse diretório")
+	// Alternate wording should also discard function words.
+	got = ContentWords("please list all files in this folder")
 	if len(got) != 0 {
-		t.Errorf("a Portuguese request of function words left %v", got)
+		t.Errorf("a request of function words left %v", got)
 	}
-	if got := ContentWords("mostre o conteúdo do README.md"); !contains(got, "README.md") {
+	if got := ContentWords("show the contents of README.md"); !contains(got, "README.md") {
 		t.Errorf("ContentWords = %v, want the file name", got)
 	}
 }
@@ -338,7 +338,7 @@ func TestDescribeUsesTheProgramsOwnWords(t *testing.T) {
 // word filter used the search term rules, which drop anything shorter than three
 // characters, and half of the standard commands are shorter than that.
 func TestWordCandidatesKeepsShortNames(t *testing.T) {
-	got := WordCandidates("apague o diretório build com rm")
+	got := WordCandidates("delete the build directory using rm")
 	joined := strings.Join(got, " ")
 	for _, want := range []string{"rm", "build"} {
 		if !contains(got, want) {
@@ -579,5 +579,47 @@ func TestCandidatesBindTheValuesTheRequestNames(t *testing.T) {
 	}
 	if keys["--binary-files"] {
 		t.Error("a placeholder this layer cannot fill from the request must not be offered")
+	}
+}
+
+func TestTextPatternPlaceholdersIncludeExtractedGlobs(t *testing.T) {
+	docs := Docs{Options: []Option{{Flags: []string{"-name"}, Arg: "pattern", Desc: "Match file names."}}}
+	candidates := Candidates(docs, "find files with extension .md", NamedValues{Patterns: []string{"*.md"}, Terms: []string{"search", "extension"}}, 20)
+	if len(candidates) == 0 || candidates[0].Key() != "-name *.md" {
+		t.Fatalf("extension glob was omitted: %+v", candidates)
+	}
+}
+
+func TestDerivedGlobsAreNotOfferedAsRegularExpressions(t *testing.T) {
+	docs := Docs{Options: []Option{
+		{Flags: []string{"-name"}, Arg: "pattern", Desc: "Match names using shell patterns."},
+		{Flags: []string{"-regex"}, Arg: "pattern", Desc: "Match paths using a regular expression."},
+	}}
+	candidates := Candidates(docs, "find markdown files", NamedValues{Patterns: []string{"*.md"}, Terms: []string{"explicit-regex"}}, 20)
+	nameFound, regexFound := false, false
+	for _, candidate := range candidates {
+		if candidate.Key() == "-name *.md" {
+			nameFound = true
+		}
+		if candidate.Key() == "-regex explicit-regex" {
+			regexFound = true
+		}
+		if candidate.Key() == "-regex *.md" {
+			t.Fatal("offered a shell glob as a regular expression")
+		}
+	}
+	if !nameFound || !regexFound {
+		t.Fatalf("lost valid candidates: %+v", candidates)
+	}
+}
+
+func TestNumericSuffixListsAreNotStandaloneValues(t *testing.T) {
+	docs := Docs{Options: []Option{{Flags: []string{"--age"}, Arg: "n[smhdw]", Values: []OptionValue{{Value: "d", Desc: "days"}}}}}
+	if got := Candidates(docs, "show records", NamedValues{}, 20); len(got) != 0 {
+		t.Fatalf("offered a unit without its number: %+v", got)
+	}
+	candidates := Candidates(docs, "show records aged 2 days", NamedValues{}, 20)
+	if len(candidates) != 1 || candidates[0].Key() != "--age 2" {
+		t.Fatalf("lost the documented numeric argument: %+v", candidates)
 	}
 }

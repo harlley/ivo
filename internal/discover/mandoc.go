@@ -114,12 +114,13 @@ func manPagePath(page string) (string, error) {
 // device does with it too.
 func ParseManHTML(src string) []Option {
 	var (
-		options []Option
-		region  string // "spec" or "desc", empty between entries
-		open    int    // tags open inside the region
-		argOpen int    // open Ar elements, written back as the < and > of a placeholder
-		pending string // the spec that is waiting for the description after it
-		buf     strings.Builder
+		options   []Option
+		region    string // "spec" or "desc", empty between entries
+		open      int    // tags open inside the region
+		argOpen   int    // open Ar elements, written back as the < and > of a placeholder
+		pending   string // the spec that is waiting for the description after it
+		buf       strings.Builder
+		predicate bool
 	)
 
 	flush := func(kind string) {
@@ -143,7 +144,7 @@ func ParseManHTML(src string) []Option {
 		if len(flags) == 0 {
 			return
 		}
-		options = append(options, Option{Flags: flags, Arg: arg, Desc: text})
+		options = append(options, Option{Flags: flags, Arg: arg, Desc: text, AfterOperand: predicate})
 		pending = ""
 	}
 
@@ -163,10 +164,12 @@ func ParseManHTML(src string) []Option {
 			switch {
 			case !part.End && part.Name == "dt":
 				region, open, argOpen = "spec", 1, 0
+				predicate = false
 			case !part.End && part.Name == "dd" && pending != "":
 				region, open, argOpen = "desc", 1, 0
 			case !part.End && part.Name == "p" && hasClass(part, "Pp"):
 				region, open, argOpen = "spec", 1, 0
+				predicate = false
 			case !part.End && part.Name == "div" && hasClass(part, "Bd-indent") && pending != "":
 				region, open, argOpen = "desc", 1, 0
 			}
@@ -182,6 +185,12 @@ func ParseManHTML(src string) []Option {
 			continue
 		}
 		if !part.End {
+			if region == "desc" && (part.Name == "dt" || part.Name == "dd") {
+				buf.WriteString(" ")
+			}
+			if region == "spec" && hasClass(part, "Ic") {
+				predicate = true
+			}
 			if part.Name == "var" && hasClass(part, "Ar") && region == "spec" {
 				buf.WriteString("<")
 				argOpen++
@@ -216,6 +225,28 @@ func ParseManHTML(src string) []Option {
 						options[i].Arg = arg
 					}
 				}
+			}
+		}
+	}
+	// Keep expression placement only when the synopsis documents a path followed by an expression.
+	synopsis := ""
+	if start := strings.Index(src, `id="SYNOPSIS"`); start >= 0 {
+		synopsis = src[start:]
+		if end := strings.Index(synopsis, "</section>"); end >= 0 {
+			synopsis = synopsis[:end]
+		}
+	}
+	pathExpression := strings.Contains(synopsis, "path") && strings.Contains(synopsis, "expression")
+	enums := documentedEnums.FindAllStringSubmatch(src, -1)
+	for i := range options {
+		options[i].AfterOperand = options[i].AfterOperand && pathExpression
+		if options[i].Arg == "" {
+			continue
+		}
+		for _, pair := range enums {
+			value, desc := html.UnescapeString(pair[1]), flatten(plainTextOf(pair[2]))
+			if strings.Contains(options[i].Desc, value+" "+desc) {
+				options[i].Values = append(options[i].Values, OptionValue{Value: value, Desc: desc})
 			}
 		}
 	}
@@ -384,3 +415,5 @@ func hasClass(part htmlPart, class string) bool {
 }
 
 var synopsisArguments = regexp.MustCompile(`<code class="Fl">([^<]+)</code>\s*<var class="Ar">([^<]+)</var>`)
+
+var documentedEnums = regexp.MustCompile(`(?s)<dt[^>]*>\s*(?:<a[^>]*>)?<code class="(?:Cm|Li)">([A-Za-z0-9_-]+)</code>(?:</a>)?\s*</dt>\s*<dd>(.*?)</dd>`)

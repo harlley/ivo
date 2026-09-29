@@ -539,6 +539,15 @@ func (p *Plan) walkOptions(toolName string, operands map[string]model.Answer, as
 				Remaining: remaining(options, flags)}, nil
 		}
 
+		// A weak choice can indicate that narrowing omitted the needed option.
+		// Widen once before committing to it; final verification remains required.
+		answer := response.Answers[catalog.OptionQuestionID(round)]
+		if !widened && len(subcommands) == 0 && answer.Choice != catalog.NoneKey && answer.Confidence < catalog.DocumentedFlagThreshold {
+			if wide := catalog.AllDocumentedOptions(p.Env, program); len(wide) > len(offered) {
+				options, widened = wide, true
+				continue
+			}
+		}
 		next, ok := nextOption(response.Answers, offered, flags, round)
 		if !ok {
 			// "The call is not the whole answer" and "nothing you showed me

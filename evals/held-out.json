@@ -149,6 +149,54 @@
           "main.go"
         ]
       ]
+    },
+    {
+      "phrase": "use find to search for regular files with extension .md",
+      "why": "An extension glob must bind to the name predicate, and the search path must precede the expression.",
+      "verdict": "act",
+      "command": "find",
+      "argv_any": [
+        [
+          "find",
+          ".",
+          "-name",
+          "*.md",
+          "-type",
+          "f"
+        ],
+        [
+          "find",
+          ".",
+          "-type",
+          "f",
+          "-name",
+          "*.md"
+        ]
+      ]
+    },
+    {
+      "phrase": "use find to search for regular files ending exactly in .go, case-sensitive",
+      "why": "An extension glob must use case-sensitive file-name matching, not a regular expression or a case-insensitive predicate.",
+      "verdict": "act",
+      "command": "find",
+      "argv_any": [
+        [
+          "find",
+          ".",
+          "-type",
+          "f",
+          "-name",
+          "*.go"
+        ],
+        [
+          "find",
+          ".",
+          "-name",
+          "*.go",
+          "-type",
+          "f"
+        ]
+      ]
     }
   ]
 }

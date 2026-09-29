@@ -45,7 +45,7 @@ sent to TypeSafe. The executed program's output is printed directly.
 ## How it works
 
 The model selects from installed executables, documented options, and argument
-candidates extracted from the request. Code assembles and validates the command,
+candidates extracted from the request or documented value lists. Code assembles and validates the command,
 then executes it directly without a shell.
 
 The current adapter uses TypeSafe's Jev (`jev-latest`). Other providers can

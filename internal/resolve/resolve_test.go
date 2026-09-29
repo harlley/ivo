@@ -318,3 +318,26 @@ func TestSubcommandVerificationUsesItsOwnDocumentation(t *testing.T) {
 		t.Fatalf("verification still saw root documentation: %v", selected)
 	}
 }
+
+func TestWeakNarrowChoiceWidensBeforeAppending(t *testing.T) {
+	e := testEnv(t)
+	e.Request = "list files"
+	p, err := resolve.Build(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asker := &scriptedAsker{t: t, scripted: []map[string]model.Answer{
+		nomination("ls"),
+		{"intent": choice("ls", .99), "guardrail.tool_is_clear": noul(.99)},
+		{"operand?": noul(.99), "operand": choice(".", .99)},
+		{"satisfied.0": noul(0), "options.0": choice("-a", .3)},
+		{"satisfied.1": noul(.99)},
+	}}
+	result, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Flags) != 0 {
+		t.Fatalf("accepted an uncertain option: %v", result.Flags)
+	}
+}

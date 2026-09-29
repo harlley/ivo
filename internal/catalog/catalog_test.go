@@ -224,3 +224,20 @@ func TestOptionDescriptionsKeepOutputDependencies(t *testing.T) {
 		t.Fatalf("lost output dependency: %q", description)
 	}
 }
+
+func TestDocumentedPredicatesCanFollowThePositionalOperand(t *testing.T) {
+	e := testEnv()
+	e.Request = "find files with extension .md"
+	e.Candidates = env.Candidates{Patterns: []string{"*.md"}, Terms: []string{"extension"}}
+	e.Docs["find"] = discover.Docs{Options: []discover.Option{{Flags: []string{"-name"}, Arg: "pattern", AfterOperand: true, Desc: "Match the file name against a pattern."}}}
+	tool := program("find")
+	binding, _ := tool.Bind(e)
+	answers := operand(".")
+	result, err := catalog.Fill(tool, binding, answers, []string{"-name *.md"}, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(result.Argv, "|"); got != "find|.|-name|*.md" {
+		t.Fatalf("invalid predicate order: %q", result.Argv)
+	}
+}

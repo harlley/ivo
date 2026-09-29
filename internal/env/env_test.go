@@ -182,17 +182,15 @@ func TestProbeSurvivesAnUntrustedRequest(t *testing.T) {
 	}
 }
 
-// TestPortugueseInputIsStillHandled keeps the language-independent promise
-// honest. The catalog, the questions and the output are all English, but the
-// phrase the user types is not assumed to be: Portuguese function words are
-// filtered and the words that carry meaning survive as candidates.
-func TestPortugueseInputIsStillHandled(t *testing.T) {
+// TestInputFiltersFunctionWords checks that ordinary request wording is not
+// mistaken for literal argument values.
+func TestInputFiltersFunctionWords(t *testing.T) {
 	t.Chdir(writeTree(t))
-	e, err := Probe(ProbeOptions{Request: "liste todos os arquivos desse diretório"})
+	e, err := Probe(ProbeOptions{Request: "list all files in this directory"})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
-	for _, noise := range []string{"liste", "todos", "desse", "diretório", "arquivos"} {
+	for _, noise := range []string{"list", "all", "files", "this", "directory"} {
 		if contains(e.Candidates.Terms, noise) {
 			t.Errorf("terms = %v should have filtered the function word %q", e.Candidates.Terms, noise)
 		}
