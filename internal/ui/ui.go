@@ -1,4 +1,4 @@
-// Package ui renders jev-cli's own output. The executed command's output is
+// Package ui renders ivo's own output. The executed command's output is
 // never touched: it goes straight to the terminal, so pipes and pagers work.
 package ui
 
@@ -21,7 +21,7 @@ const (
 	cyan   = "\033[36m"
 )
 
-// Printer writes jev-cli's own messages. Diagnostics go to Err so that stdout
+// Printer writes ivo's own messages. Diagnostics go to Err so that stdout
 // stays clean for --json and for the executed command.
 type Printer struct {
 	Out   io.Writer
@@ -94,7 +94,7 @@ func (p *Printer) Say(format string, args ...any) {
 // not consent.
 //
 // A closed input is not consent either. That distinction is the one that keeps
-// `jev "..." </dev/null`, a cron entry or a script that forgot --yolo from
+// `ivo "..." </dev/null`, a cron entry or a script that forgot --yolo from
 // approving something by accident, while a person pressing enter still does.
 func (p *Printer) Confirm(in io.Reader, question string) bool {
 	fmt.Fprintf(p.Err, "%s ", question)

@@ -2,742 +2,319 @@ package resolve_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"sort"
 	"strings"
 	"testing"
 
-	"github.com/harlleyoliveira/jev-cli/internal/catalog"
-	"github.com/harlleyoliveira/jev-cli/internal/discover"
-	"github.com/harlleyoliveira/jev-cli/internal/env"
-	"github.com/harlleyoliveira/jev-cli/internal/resolve"
-	"github.com/harlleyoliveira/jev-cli/internal/run"
-	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
+	"github.com/harlley/ivo/internal/catalog"
+	"github.com/harlley/ivo/internal/discover"
+	"github.com/harlley/ivo/internal/env"
+	"github.com/harlley/ivo/internal/model"
+	"github.com/harlley/ivo/internal/resolve"
+	"github.com/harlley/ivo/internal/run"
 )
 
 func testEnv(t *testing.T) *env.Env {
 	t.Helper()
-	bins := map[string]bool{}
-	for _, b := range catalog.Binaries() {
-		bins[b] = true
+	raw, err := os.ReadFile("../discover/testdata/man-ls.txt")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return &env.Env{
-		Request: "list the files with details",
-		OS:      "darwin",
-		CWD:     "/tmp/project",
-		Home:    "/Users/test",
-		Shell:   "/bin/zsh",
-		Bins:    bins,
-		Entries: []env.Entry{
-			{Name: "src", IsDir: true},
-			{Name: "main.go"},
-			{Name: "README.md"},
-		},
-		EntryCount: 3,
-		Docs:       testDocs(t),
-		Candidates: env.Candidates{Terms: []string{"TODO"}, Patterns: []string{"*.go"}},
-	}
+	return &env.Env{Request: "list the files with details", OS: "darwin", CWD: "/tmp/project", Commands: []string{"ls", "pwd", "rg"},
+		Candidates: env.Candidates{Paths: []string{"src"}, Terms: []string{"TODO"}, Patterns: []string{"*.go"}},
+		Docs: map[string]discover.Docs{
+			"ls":  {Program: "ls", Summary: "List directory contents.", Options: discover.ParseMan(string(run.StripOverstrike(raw)))},
+			"pwd": {Program: "pwd", Summary: "Print the working directory."},
+			"rg":  {Program: "rg", Summary: "Search text.", Options: []discover.Option{{Flags: []string{"-g"}, Arg: "GLOB", Desc: "Include matching files."}, {Flags: []string{"-e"}, Arg: "PATTERN", Desc: "Search for a pattern."}}},
+		}}
 }
-
 func plan(t *testing.T) *resolve.Plan {
 	t.Helper()
 	p, err := resolve.Build(testEnv(t))
 	if err != nil {
-		t.Fatalf("Build: %v", err)
+		t.Fatal(err)
 	}
 	return p
 }
-
-func TestBuildProducesAValidRequest(t *testing.T) {
-	p := plan(t)
-	if err := p.Request.Validate(); err != nil {
-		t.Fatalf("request is not valid: %v", err)
-	}
-	for _, want := range []string{"intent", "target_path", "guardrail.injection", "guardrail.severity"} {
-		if _, ok := p.Request.Questions[want]; !ok {
-			t.Errorf("request is missing %q", want)
-		}
-	}
-	state, ok := p.Request.State.(map[string]any)
-	if !ok {
-		t.Fatalf("state is %T", p.Request.State)
-	}
-	directory := state["directory"].(map[string]any)
-	entries := directory["entries"].([]string)
-	if len(entries) != 3 || entries[0] != "src/" {
-		t.Errorf("entries = %v, want subdirectories first with a trailing slash", entries)
-	}
-	if directory["entry_count"].(int) != 3 {
-		t.Errorf("entry_count = %v, want 3 counted in code", directory["entry_count"])
-	}
+func choice(key string, confidence float64) model.Answer {
+	return model.Answer{Type: model.KindChoice, Choice: key, Confidence: confidence, Probabilities: map[string]float64{key: confidence}}
+}
+func noul(v float64) model.Answer { return model.Answer{Type: model.KindNoul, Noul: v} }
+func stageOne(name string, confidence float64) map[string]model.Answer {
+	return map[string]model.Answer{"intent": choice(name, confidence), "guardrail.tool_is_clear": noul(.99), "operand?": noul(.99), "operand": choice(".", .99)}
+}
+func nomination(name string) map[string]model.Answer {
+	return map[string]model.Answer{"discover.0": choice(name, .99)}
 }
 
-// autoAnswers fills every question with a harmless answer, so a test only has
-// to override the ones that matter.
-func autoAnswers(req typesafe.SystemOneRequest) map[string]typesafe.Answer {
-	out := map[string]typesafe.Answer{}
-	for id, q := range req.Questions {
-		switch v := q.(type) {
-		case typesafe.NoulQuestion:
-			out[id] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0}
-		case typesafe.ChoiceQuestion:
-			keys := make([]string, 0, len(v.Criteria))
-			for k := range v.Criteria {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			out[id] = typesafe.Answer{Type: typesafe.KindChoice, Choice: keys[0], Confidence: 1}
-		case typesafe.ScoreQuestion:
-			out[id] = typesafe.Answer{Type: typesafe.KindScore, Score: 0}
-		}
-	}
-	return out
-}
-
-func choice(key string, confidence float64) typesafe.Answer {
-	return typesafe.Answer{
-		Type:          typesafe.KindChoice,
-		Choice:        key,
-		Confidence:    confidence,
-		Probabilities: map[string]float64{key: confidence},
-	}
-}
-
-func TestDecideVerdicts(t *testing.T) {
-	p := plan(t)
-
-	cases := []struct {
-		name        string
-		answers     map[string]typesafe.Answer
-		verdict     resolve.Verdict
-		flags       []string
-		callIsSafe  bool
-		wantCaution bool
-		wantArgv    string
-		// wantSuggestion marks the verdicts that should still carry the tool's
-		// best reading of the phrase, for display only.
-		wantSuggestion bool
-	}{
-		{
-			name: "a clear read-only request acts",
-			answers: map[string]typesafe.Answer{
-				"intent":                  choice("list_directory", 0.94),
-				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-			},
-			verdict:  resolve.VerdictAct,
-			wantArgv: "ls .",
-		},
-		{
-			name: "the options chosen in the flag stage land in the command",
-			answers: map[string]typesafe.Answer{
-				"intent":                  choice("list_directory", 0.94),
-				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-			},
-			flags:    []string{"-a"},
-			verdict:  resolve.VerdictAct,
-			wantArgv: "ls -a .",
-		},
-		{
-			name: "low confidence asks instead of acting",
-			answers: map[string]typesafe.Answer{
-				"intent":                  choice("list_directory", 0.42),
-				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-			},
-			verdict:        resolve.VerdictAsk,
-			wantSuggestion: true,
-		},
-		{
-			name: "the escape hatch wins when it is competitive",
-			answers: map[string]typesafe.Answer{
-				"intent": typesafe.Answer{
-					Type: typesafe.KindChoice, Choice: "list_directory", Confidence: 0.55,
-					Probabilities: map[string]float64{"list_directory": 0.55, catalog.NoneKey: 0.45},
-				},
-				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-			},
-			verdict: resolve.VerdictUnsupported,
-		},
-		{
-			name: "a request to change something is refused",
-			answers: map[string]typesafe.Answer{
-				"intent":                        choice("list_directory", 0.94),
-				"guardrail.tool_is_clear":       {Type: typesafe.KindNoul, Noul: 0.95},
-				"guardrail.destructive_request": {Type: typesafe.KindNoul, Noul: 0.80},
-			},
-			verdict: resolve.VerdictUnsupported,
-		},
-		{
-			name: "a request that tries to escape the catalog is blocked",
-			answers: map[string]typesafe.Answer{
-				"intent":                  choice("list_directory", 0.94),
-				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-				"guardrail.injection":     {Type: typesafe.KindNoul, Noul: 0.93},
-			},
-			verdict: resolve.VerdictBlocked,
-		},
-		{
-			name: "an ambiguous request asks back",
-			answers: map[string]typesafe.Answer{
-				"intent":                  choice("list_directory", 0.94),
-				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.10},
-			},
-			verdict:        resolve.VerdictAsk,
-			wantSuggestion: true,
-		},
-		{
-			name: "a severe estimate becomes a caution, not a block",
-			answers: map[string]typesafe.Answer{
-				"intent":                  choice("list_directory", 0.94),
-				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-				"guardrail.severity":      {Type: typesafe.KindScore, Score: 3.2},
-			},
-			verdict:     resolve.VerdictAct,
-			wantArgv:    "ls .",
-			wantCaution: true,
-		},
-		{
-			name: "an unresolvable target asks back",
-			answers: map[string]typesafe.Answer{
-				"intent":                  choice("show_file", 0.94),
-				"guardrail.tool_is_clear": {Type: typesafe.KindNoul, Noul: 0.95},
-				"target_path":             choice(catalog.NoneKey, 0.9),
-			},
-			verdict: resolve.VerdictAsk,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			answers := autoAnswers(p.Request)
-			for k, v := range tc.answers {
-				answers[k] = v
-			}
-			decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, tc.flags, tc.callIsSafe, resolve.DecideOptions{})
-			if err != nil {
-				t.Fatalf("Decide: %v", err)
-			}
-			if decision.Verdict != tc.verdict {
-				t.Fatalf("verdict = %q, want %q (reason: %s)", decision.Verdict, tc.verdict, decision.Reason)
-			}
-			if tc.wantArgv != "" {
-				if got := strings.Join(decision.Argv, " "); got != tc.wantArgv {
-					t.Errorf("argv = %q, want %q", got, tc.wantArgv)
-				}
-			}
-			switch {
-			case decision.Verdict == resolve.VerdictAct:
-				if len(decision.Argv) == 0 {
-					t.Error("an acting verdict must carry a command")
-				}
-			case tc.wantSuggestion:
-				// A gated verdict may carry the best reading of the phrase, but
-				// only for display: every caller executes on VerdictAct alone.
-				if len(decision.Argv) == 0 {
-					t.Error("expected a display-only suggestion alongside the ask")
-				}
-			default:
-				if len(decision.Argv) != 0 {
-					t.Errorf("a refused request must not carry even a suggestion: %v", decision.Argv)
-				}
-			}
-			if decision.Reason == "" && decision.Verdict != resolve.VerdictAct {
-				t.Error("every non-acting verdict needs a reason")
-			}
-			if tc.wantCaution && decision.Caution == "" {
-				t.Error("expected a caution for the prompt")
-			}
-		})
-	}
-}
-
-func TestAlternativesAreOfferedOnALowConfidenceAnswer(t *testing.T) {
-	p := plan(t)
-	answers := autoAnswers(p.Request)
-	answers["intent"] = typesafe.Answer{
-		Type: typesafe.KindChoice, Choice: "list_directory", Confidence: 0.45,
-		Probabilities: map[string]float64{
-			"list_directory": 0.45,
-			"search_text":    0.38,
-			"show_file":      0.12,
-			catalog.NoneKey:  0.05,
-		},
-	}
-	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, nil, false, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if len(decision.Alternatives) < 2 {
-		t.Fatalf("alternatives = %v, want the runners-up", decision.Alternatives)
-	}
-	if decision.Alternatives[0].Key != "search_text" {
-		t.Errorf("first alternative = %q, want search_text", decision.Alternatives[0].Key)
-	}
-	if decision.Alternatives[0].Description == "" {
-		t.Error("alternatives should carry the catalog's own description")
-	}
-	for _, alt := range decision.Alternatives {
-		if alt.Key == catalog.NoneKey {
-			t.Error("the escape hatch is not an alternative command")
-		}
-		if alt.Key == "list_directory" {
-			t.Error("the chosen option is not an alternative to itself")
-		}
-	}
-}
-
-// TestThePlanAsksEveryQuestionAssemblyNeeds closes a gap that once let a shared
-// question id silently drop a whole question. The plan and the assembler must
-// agree on what has to be answered.
-func TestThePlanAsksEveryQuestionAssemblyNeeds(t *testing.T) {
-	p := plan(t)
-
-	for _, tool := range p.Tools {
-		binding, ok := p.Bindings[tool.Name]
-		if !ok {
-			t.Fatalf("%s: no binding", tool.Name)
-		}
-		for _, param := range binding.Params {
-			qid := param.QuestionID(tool.Name)
-			if _, asked := p.Request.Questions[qid]; !asked {
-				t.Errorf("%s: the plan never asks %q", tool.Name, qid)
-			}
-			if param.Gated {
-				if _, asked := p.Request.Questions[qid+"?"]; !asked {
-					t.Errorf("%s: the plan never asks the gate %q", tool.Name, qid+"?")
-				}
-			}
-		}
-	}
-}
-
-// scriptedAsker answers a sequence of requests, so the walk is covered without
-// a network and without a model.
 type scriptedAsker struct {
 	t        *testing.T
-	scripted []map[string]typesafe.Answer
-	requests []typesafe.SystemOneRequest
+	scripted []map[string]model.Answer
+	requests []model.Request
 }
 
-func (a *scriptedAsker) SystemOne(_ context.Context, request typesafe.SystemOneRequest) (*typesafe.Result, error) {
+func (a *scriptedAsker) Ask(_ context.Context, request model.Request) (*model.Result, error) {
+	if request.Model != "" {
+		a.t.Fatalf("resolver selected a provider model: %q", request.Model)
+	}
 	a.requests = append(a.requests, request)
+	if err := request.Validate(); err != nil {
+		a.t.Fatal(err)
+	}
 	if len(a.scripted) == 0 {
-		a.t.Fatalf("unexpected request %d", len(a.requests))
+		a.t.Fatalf("unexpected request %d: %v", len(a.requests), askedIDs(request))
 	}
 	answers := a.scripted[0]
 	a.scripted = a.scripted[1:]
-	return &typesafe.Result{Response: &typesafe.SystemOneResponse{Model: "scripted", Answers: answers}}, nil
-}
-
-func noul(v float64) typesafe.Answer { return typesafe.Answer{Type: typesafe.KindNoul, Noul: v} }
-
-// stageOne is what a first stage needs to pick a tool and act on it.
-func stageOne(tool string, confidence float64) map[string]typesafe.Answer {
-	return map[string]typesafe.Answer{
-		"intent":                  choice(tool, confidence),
-		"guardrail.tool_is_clear": noul(0.95),
-		"target_path":             choice(".", 0.97),
-	}
-}
-
-// TestTheWalkAccumulatesOptionsUntilTheCallSatisfies is the recursion the design
-// turns on: the plain call does not satisfy the request, so one option is added,
-// and the question is asked again with the call so far.
-func TestTheWalkAccumulatesOptionsUntilTheCallSatisfies(t *testing.T) {
-	p := plan(t)
-	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
-		// The word filter runs first. Nothing here names a program, so the
-		// shaped tools are the whole vocabulary for this call.
-		{},
-		stageOne("list_directory", 0.95),
-		// Round one: ls alone is not enough, so add -a.
-		{"satisfied.0": noul(0.08), "options.0": choice("-a", 0.94)},
-		// Round two: ls -a is still not enough, so add -l.
-		{"satisfied.1": noul(0.21), "options.1": choice("-l", 0.90)},
-		// Round three: ls -a -l answers it.
-		{"satisfied.2": noul(0.93), "options.2": choice(catalog.NoneKey, 0.8)},
-	}}
-
-	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	// The word filter, the tool stage, and three rounds.
-	if evaluation.Stages != 5 {
-		t.Errorf("stages = %d, want the word filter, the tool stage and three rounds", evaluation.Stages)
-	}
-	if got := strings.Join(evaluation.Flags, " "); got != "-a -l" {
-		t.Errorf("flags = %q, want -a -l", got)
-	}
-	if got := strings.Join(evaluation.Decision.Argv, " "); got != "ls -a -l ." {
-		t.Errorf("argv = %q", got)
-	}
-
-	// Each round carries the call built so far, because judging whether it
-	// already satisfies the request is the whole question.
-	if got := fmt.Sprint(asker.requests[2].Questions["satisfied.0"]); !strings.Contains(got, "ls .") {
-		t.Errorf("the first satisfaction question should describe ls ., got %v", got)
-	}
-	if got := fmt.Sprint(asker.requests[3].Questions["satisfied.1"]); !strings.Contains(got, "ls -a .") {
-		t.Errorf("the second should describe ls -a ., got %v", got)
-	}
-}
-
-func TestTheWalkStopsWhenTheCallIsAlreadyEnough(t *testing.T) {
-	p := plan(t)
-	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
-		{},
-		stageOne("list_directory", 0.95),
-		{"satisfied.0": noul(0.88), "options.0": choice("-a", 0.9)},
-	}}
-
-	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if len(evaluation.Flags) != 0 {
-		t.Errorf("flags = %v, want none: the call was already enough", evaluation.Flags)
-	}
-	if got := strings.Join(evaluation.Decision.Argv, " "); got != "ls ." {
-		t.Errorf("argv = %q", got)
-	}
-}
-
-func TestTheWalkStopsAtTheEscapeHatchAndAtTheRoundLimit(t *testing.T) {
-	p := plan(t)
-	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
-		{},
-		stageOne("list_directory", 0.95),
-		{"satisfied.0": noul(0.10), "options.0": choice(catalog.NoneKey, 0.85)},
-	}}
-	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if len(evaluation.Flags) != 0 || evaluation.Rounds != 1 {
-		t.Errorf("flags = %v after %d rounds, want none after one: nothing fits",
-			evaluation.Flags, evaluation.Rounds)
-	}
-
-	// A model that never settles must not turn a call into a conversation.
-	scripted := []map[string]typesafe.Answer{{}, stageOne("list_directory", 0.95)}
-	for round := 0; round < 6; round++ {
-		scripted = append(scripted, map[string]typesafe.Answer{
-			fmt.Sprintf("satisfied.%d", round): noul(0.05),
-			fmt.Sprintf("options.%d", round):   choice("-a", 0.9),
-		})
-	}
-	evaluation, err = p.Evaluate(context.Background(), &scriptedAsker{t: t, scripted: scripted}, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if evaluation.Rounds > 3 {
-		t.Errorf("rounds = %d, want the walk bounded at 3", evaluation.Rounds)
-	}
-	if len(evaluation.Flags) > 3 {
-		t.Errorf("flags = %v, want at most one per round", evaluation.Flags)
-	}
-}
-
-func TestAnOptionTheProgramDoesNotDocumentIsIgnored(t *testing.T) {
-	p := plan(t)
-	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
-		{},
-		stageOne("list_directory", 0.95),
-		{"satisfied.0": noul(0.10), "options.0": choice("--exec=rm -rf /", 0.99)},
-	}}
-	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if len(evaluation.Flags) != 0 {
-		t.Errorf("flags = %v, want none: the program documents no such option", evaluation.Flags)
-	}
-}
-
-// TestContentSearchCanBeLimitedToMatchingFiles covers the other real gap: the
-// phrase "search for TODO in the go files" ran `rg -e TODO .`, silently
-// searching every file instead of the go files that were asked for.
-func TestContentSearchCanBeLimitedToMatchingFiles(t *testing.T) {
-	p := plan(t)
-	answers := autoAnswers(p.Request)
-	answers["intent"] = choice("search_text", 0.95)
-	answers["search_terms"] = choice("TODO", 1.0)
-	answers["target_path"] = choice(".", 0.9)
-	answers["guardrail.tool_is_clear"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.96}
-	answers["search_text.files"] = choice("*.go", 0.93)
-	answers["search_text.files?"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.91}
-
-	decision, err := p.Decide(&typesafe.SystemOneResponse{Answers: answers}, nil, false, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if got := strings.Join(decision.Argv, " "); got != "rg -g *.go -e TODO ." {
-		t.Errorf("argv = %q, want the file filter applied", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// The objective's own invariants, asserted directly.
-// ---------------------------------------------------------------------------
-
-// TestTheRequestUsesOnlyTheThreePrimitives pins down "using only jev's
-// primitives, with no text generation": the wire body has exactly the three
-// top-level fields the API defines, and every question is one of noul, choice
-// or score with instructions attached. There is no field anywhere in which a
-// caller could ask the model to produce a string.
-func TestTheRequestUsesOnlyTheThreePrimitives(t *testing.T) {
-	p := plan(t)
-
-	raw, err := json.Marshal(p.Request)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &top); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	for _, want := range []string{"state", "model", "questions"} {
-		if _, ok := top[want]; !ok {
-			t.Errorf("request is missing the %q field", want)
+	for id := range answers {
+		if _, ok := request.Questions[id]; !ok {
+			a.t.Fatalf("request %d does not ask %s: %v", len(a.requests), id, askedIDs(request))
 		}
 	}
-	for key := range top {
-		switch key {
-		case "state", "model", "questions":
-		default:
-			t.Errorf("unexpected top-level field %q: the endpoint takes exactly state, model and questions", key)
-		}
+	return &model.Result{Response: &model.Response{Model: "scripted", Answers: answers, Usage: model.Usage{InputTokens: 1}}}, nil
+}
+func askedIDs(request model.Request) []string {
+	var ids []string
+	for id := range request.Questions {
+		ids = append(ids, id)
 	}
+	sort.Strings(ids)
+	return ids
+}
 
-	var decoded struct {
-		Questions map[string]struct {
-			Type         string          `json:"type"`
-			Instructions json.RawMessage `json:"instructions"`
-			Criteria     json.RawMessage `json:"criteria"`
-		} `json:"questions"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal questions: %v", err)
-	}
-	if len(decoded.Questions) < 5 {
-		t.Fatalf("only %d questions; the request should carry the whole battery", len(decoded.Questions))
-	}
-
-	for id, q := range decoded.Questions {
-		switch q.Type {
-		case "noul", "choice", "score":
-		default:
-			t.Errorf("question %q has type %q, which is not one of the three System One primitives", id, q.Type)
-		}
-		if len(q.Instructions) == 0 {
-			t.Errorf("question %q has no instructions", id)
-		}
-		if q.Type != "noul" && len(q.Criteria) == 0 {
-			t.Errorf("question %q has no criteria", id)
-		}
-	}
-
-	// Every Choice must stay inside the documented 255-option ceiling, or the
-	// API answers 422 instead of an answer.
-	for id, q := range p.Request.Questions {
-		choice, ok := q.(typesafe.ChoiceQuestion)
-		if !ok {
+// applyOperandSplit keeps a tool's expected answers together in a test case, but
+// sends the operand answers in their separate stage after the program was
+// selected.
+func applyOperandSplit(answers []map[string]model.Answer) []map[string]model.Answer {
+	var stages []map[string]model.Answer
+	for _, stage := range answers {
+		if _, hasOperand := stage["operand?"]; !hasOperand {
+			stages = append(stages, stage)
 			continue
 		}
-		if len(choice.Criteria) < 2 {
-			t.Errorf("choice %q has %d options; a choice needs at least 2", id, len(choice.Criteria))
+		selection, operands := map[string]model.Answer{}, map[string]model.Answer{}
+		for id, answer := range stage {
+			if strings.HasPrefix(id, "operand") {
+				operands[id] = answer
+			} else {
+				selection[id] = answer
+			}
 		}
-		if len(choice.Criteria) > typesafe.MaxChoiceOptions {
-			t.Errorf("choice %q has %d options, over the %d ceiling", id, len(choice.Criteria), typesafe.MaxChoiceOptions)
-		}
+		stages = append(stages, selection, operands)
 	}
+	return stages
 }
 
-func TestEndToEndThroughTheHTTPClient(t *testing.T) {
-	p := plan(t)
-
-	answers := autoAnswers(p.Request)
-	answers["intent"] = typesafe.Answer{
-		Type: typesafe.KindChoice, Choice: "list_directory", Confidence: 0.93,
-		Probabilities: map[string]float64{"list_directory": 0.93, "search_text": 0.05, catalog.NoneKey: 0.02},
-	}
-	answers["target_path"] = choice(".", 0.99)
-
-	answers["guardrail.injection"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.01}
-	answers["guardrail.destructive_request"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.02}
-	answers["guardrail.tool_is_clear"] = typesafe.Answer{Type: typesafe.KindNoul, Noul: 0.97}
-	answers["guardrail.severity"] = typesafe.Answer{Type: typesafe.KindScore, Score: 0.1}
-
-	var gotRequest typesafe.SystemOneRequest
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"model":   "jev-test",
-			"answers": answers,
-			"usage":   map[string]int{"input_tokens": 900, "output_tokens": 40},
-		})
-	}))
-	defer server.Close()
-
-	client := typesafe.NewClient("test-key", typesafe.WithBaseURL(server.URL))
-	result, err := client.SystemOne(t.Context(), p.Request)
-	if err != nil {
-		t.Fatalf("SystemOne: %v", err)
-	}
-	if len(gotRequest.Questions) != len(p.Request.Questions) {
-		t.Errorf("server saw %d questions, want %d", len(gotRequest.Questions), len(p.Request.Questions))
-	}
-
-	decision, err := p.Decide(result.Response, []string{"-l"}, false, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if decision.Verdict != resolve.VerdictAct {
-		t.Fatalf("verdict = %q (%s)", decision.Verdict, decision.Reason)
-	}
-	if got := strings.Join(decision.Argv, " "); got != "ls -l ." {
-		t.Errorf("argv = %q, want %q", got, "ls -l .")
-	}
-	if result.Response.Usage.InputTokens != 900 {
-		t.Errorf("usage did not survive the round trip: %+v", result.Response.Usage)
-	}
-}
-
-// testDocs mirrors the catalog test: the real documentation of the programs
-// whose flags are discovered, so no process is spawned here either.
-func testDocs(t *testing.T) map[string]discover.Docs {
+func evaluate(t *testing.T, p *resolve.Plan, answers ...map[string]model.Answer) *resolve.Evaluation {
 	t.Helper()
-	read := func(name string) string {
-		raw, err := os.ReadFile("../discover/testdata/" + name)
-		if err != nil {
-			t.Fatalf("fixture %s: %v", name, err)
-		}
-		return string(run.StripOverstrike(raw))
+	answers = applyOperandSplit(answers)
+	asker := &scriptedAsker{t: t, scripted: answers}
+	result, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return map[string]discover.Docs{
-		"ls": {Program: "ls", Source: "man", Options: discover.ParseMan(read("man-ls.txt"))},
-		"rg": {Program: "rg", Source: "help", Options: discover.ParseHelp(read("help-rg.txt"))},
+	if len(asker.scripted) != 0 {
+		t.Fatalf("%d scripted requests unused", len(asker.scripted))
+	}
+	if result.Usage.InputTokens != len(answers) {
+		t.Fatalf("usage lost a stage: %+v", result)
+	}
+	return result
+}
+
+func TestBuildStartsWithInstalledProgramsAndNoPredefinedTools(t *testing.T) {
+	p := plan(t)
+	if len(p.Tools) != 0 || len(p.Bindings) != 0 {
+		t.Fatal("Build added predefined tools")
+	}
+	if _, ok := p.Request.Questions["intent"]; ok {
+		t.Fatal("tool selection must follow discovery")
+	}
+	if err := p.Request.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	criteria := p.Request.Questions["discover.0"].(model.ChoiceQuestion).Criteria
+	if len(criteria) != len(p.Env.Commands)+1 {
+		t.Fatalf("criteria=%v", criteria)
+	}
+	for _, name := range p.Env.Commands {
+		if _, ok := criteria[name]; !ok {
+			t.Fatal(name)
+		}
+	}
+	if _, err := resolve.Build(&env.Env{}); err == nil {
+		t.Fatal("empty inventory must be reported")
 	}
 }
 
-// TestAWordThatNamesAProgramBecomesATool is the first filter, and the one that
-// stops the tool space from being a list written in code: the request is read
-// word by word, and a word the model calls a program becomes a tool when this
-// machine actually has it.
-func TestAWordThatNamesAProgramBecomesATool(t *testing.T) {
-	e := testEnv(t)
-	e.Request = "open the current project in zed"
-	// The machine's own command list, which the word filter is checked against.
-	e.Commands = []string{"cat", "ls", "pwd", "zed"}
-	// Its documentation, so the test does not read a manual page.
-	e.Docs = map[string]discover.Docs{"zed": {
-		Program: "zed", Source: "help",
-		Options: []discover.Option{{Flags: []string{"--new"}, Desc: "Open a new window."}},
-	}}
-	p, err := resolve.Build(e)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	words := p.Words
-	zedIndex := -1
-	for i, w := range words {
-		if strings.EqualFold(w, "zed") {
-			zedIndex = i
-		}
-	}
-	if zedIndex < 0 {
-		t.Fatalf("words = %v, want zed among them", words)
-	}
-	wordAnswers := map[string]typesafe.Answer{}
-	for i := range words {
-		wordAnswers[fmt.Sprintf("word.%d", i)] = noul(0.05)
-	}
-	wordAnswers[fmt.Sprintf("word.%d", zedIndex)] = noul(0.97)
-
-	// A call that changes nothing runs: opening an editor on a project leaves
-	// the machine as it was.
-	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
-		wordAnswers,
-		{"intent": choice("zed", 0.93), "guardrail.tool_is_clear": noul(0.9),
-			"operand": choice(".", 0.9), "operand?": noul(0.94)},
-		{"satisfied.0": noul(0.9)},
-		{"side_effect": noul(0.06)},
-	}}
-	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if len(evaluation.Programs) != 1 || evaluation.Programs[0] != "zed" {
-		t.Fatalf("programs = %v, want zed", evaluation.Programs)
-	}
-	if evaluation.Decision.Verdict != resolve.VerdictAct {
-		t.Fatalf("verdict = %q (%s), want act", evaluation.Decision.Verdict, evaluation.Decision.Reason)
-	}
-	if got := strings.Join(evaluation.Decision.Argv, " "); got != "zed ." {
-		t.Errorf("argv = %q, want zed .", got)
-	}
-
-	// The tool stage offered it, with the program's own words as description.
-	if _, ok := asker.requests[1].Questions["intent"].(typesafe.ChoiceQuestion).Criteria["zed"]; !ok {
-		t.Error("the tool question should offer the program the request named")
-	}
-
-	// The same call, judged to change something, is refused until told twice.
-	p2, err := resolve.Build(e)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	unsafe := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
-		wordAnswers,
-		{"intent": choice("zed", 0.93), "guardrail.tool_is_clear": noul(0.9),
-			"operand": choice(".", 0.9), "operand?": noul(0.94)},
-		{"satisfied.0": noul(0.9)},
-		{"side_effect": noul(0.88)},
-	}}
-	evaluation, err = p2.Evaluate(context.Background(), unsafe, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	// Consent is the gate now, so the verdict still acts: what the judgment buys
-	// is a caution shown before the question.
-	if evaluation.Decision.Verdict != resolve.VerdictAct {
-		t.Fatalf("verdict = %q (%s), want act", evaluation.Decision.Verdict, evaluation.Decision.Reason)
-	}
-	if evaluation.Decision.Caution == "" {
-		t.Error("a call judged to change something has to carry a caution for the prompt")
+func TestTheWalkAccumulatesDocumentedOptions(t *testing.T) {
+	p := plan(t)
+	result := evaluate(t, p, nomination("ls"), stageOne("ls", .99),
+		map[string]model.Answer{"satisfied.0": noul(0), "options.0": choice("-a", .99)},
+		map[string]model.Answer{"satisfied.1": noul(0), "options.1": choice("-l", .99)},
+		map[string]model.Answer{"satisfied.2": noul(.99)})
+	if result.Decision.Verdict != resolve.VerdictAct || strings.Join(result.Decision.Argv, " ") != "ls -a -l ." {
+		t.Fatalf("%+v", result.Decision)
 	}
 }
 
-// TestAWordIsNotEnoughOnItsOwn: the model may call a word a program, but only
-// this machine can say whether such a command exists.
-func TestAWordIsNotEnoughOnItsOwn(t *testing.T) {
+func TestTheWalkStopsWhenTheCallAlreadySatisfies(t *testing.T) {
+	result := evaluate(t, plan(t), nomination("ls"), stageOne("ls", .99), map[string]model.Answer{"satisfied.0": noul(.99), "options.0": choice("-a", .99)})
+	if strings.Join(result.Decision.Argv, " ") != "ls ." {
+		t.Fatal(result.Decision.Argv)
+	}
+}
+
+func TestAnInventedOptionNeverReachesTheCommand(t *testing.T) {
+	result := evaluate(t, plan(t), nomination("ls"), stageOne("ls", .99),
+		map[string]model.Answer{"satisfied.0": noul(0), "options.0": choice("--exec=rm -rf /", 1)},
+		map[string]model.Answer{"satisfied.1": noul(.99)})
+	if strings.Join(result.Decision.Argv, " ") != "ls ." {
+		t.Fatal(result.Decision.Argv)
+	}
+}
+
+func TestGenericSearchKeepsTextFlagAndPath(t *testing.T) {
+	p := plan(t)
+	result := evaluate(t, p, nomination("rg"), stageOne("rg", .99),
+		map[string]model.Answer{"satisfied.0": noul(0), "options.0": choice("-g *.go", .99)},
+		map[string]model.Answer{"satisfied.1": noul(0), "options.1": choice("-e TODO", .99)},
+		map[string]model.Answer{"satisfied.2": noul(.99)})
+	if strings.Join(result.Decision.Argv, " ") != "rg -g *.go -e TODO ." {
+		t.Fatal(result.Decision.Argv)
+	}
+}
+
+func TestUndocumentedProgramStillNeedsVerification(t *testing.T) {
 	e := testEnv(t)
-	e.Request = "open the project in zed"
-	e.Commands = []string{"ls", "pwd"} // no zed on this machine
+	e.Commands = []string{"custom"}
+	e.Docs["custom"] = discover.Docs{Program: "custom"}
 	p, err := resolve.Build(e)
 	if err != nil {
-		t.Fatalf("Build: %v", err)
+		t.Fatal(err)
 	}
-	wordAnswers := map[string]typesafe.Answer{}
-	for i := range p.Words {
-		wordAnswers[fmt.Sprintf("word.%d", i)] = noul(0.99)
+	result := evaluate(t, p, nomination("custom"), map[string]model.Answer{"intent": choice("custom", .99), "guardrail.tool_is_clear": noul(.99), "operand?": noul(0)},
+		map[string]model.Answer{catalog.VerifyQuestionID: noul(0)}, map[string]model.Answer{catalog.SideEffectQuestionID: noul(.01)})
+	if result.Decision.Verdict != resolve.VerdictAsk {
+		t.Fatalf("%+v", result.Decision)
 	}
-	asker := &scriptedAsker{t: t, scripted: []map[string]typesafe.Answer{
-		wordAnswers,
-		stageOne("report_working_directory", 0.9),
-	}}
+}
 
-	evaluation, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+func TestDecisionGatesRemainInForceForDiscoveredPrograms(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		answers map[string]model.Answer
+		want    resolve.Verdict
+	}{
+		{"ambiguous", map[string]model.Answer{"intent": choice("ls", .42)}, resolve.VerdictAsk},
+		{"unclear", map[string]model.Answer{"guardrail.tool_is_clear": noul(0)}, resolve.VerdictAsk},
+		{"destructive mismatch", map[string]model.Answer{"guardrail.destructive_request": noul(.99)}, resolve.VerdictUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answers := stageOne("ls", .99)
+			for id, a := range tc.answers {
+				answers[id] = a
+			}
+			result := evaluate(t, plan(t), nomination("ls"), answers, map[string]model.Answer{"satisfied.0": noul(.99)})
+			if result.Decision.Verdict != tc.want {
+				t.Fatalf("%+v", result.Decision)
+			}
+		})
 	}
-	if len(evaluation.Programs) != 0 {
-		t.Errorf("programs = %v, want none: zed is not installed here", evaluation.Programs)
+}
+
+func TestANumberCannotDisappearFromTheResolvedCommand(t *testing.T) {
+	e := testEnv(t)
+	e.Request = "list 3 files"
+	p, err := resolve.Build(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := evaluate(t, p, nomination("ls"), stageOne("ls", .99), map[string]model.Answer{"satisfied.0": noul(.99)})
+	if result.Decision.Verdict != resolve.VerdictAsk || !strings.Contains(result.Decision.Reason, "3") {
+		t.Fatalf("%+v", result.Decision)
+	}
+}
+
+func TestTheWalkStopsAtItsBoundAndVerifiesTheLastAddition(t *testing.T) {
+	e := testEnv(t)
+	var options []discover.Option
+	for i := 0; i < resolve.MaxOptionRounds+1; i++ {
+		options = append(options, discover.Option{Flags: []string{fmt.Sprintf("--flag%d", i)}, Desc: "An option."})
+	}
+	e.Docs["ls"] = discover.Docs{Program: "ls", Options: options}
+	p, err := resolve.Build(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := []map[string]model.Answer{nomination("ls"), stageOne("ls", .99)}
+	for i := 0; i < resolve.MaxOptionRounds; i++ {
+		script = append(script, map[string]model.Answer{fmt.Sprintf("satisfied.%d", i): noul(0), fmt.Sprintf("options.%d", i): choice(fmt.Sprintf("--flag%d", i), .99)})
+	}
+	// The last check says the call is still not the whole answer, and the walk
+	// had one option left, so it is asked for by name and the call is read once
+	// more. That is the repair, and it is bounded to one.
+	script = append(script,
+		map[string]model.Answer{catalog.VerifyQuestionID: noul(0)},
+		map[string]model.Answer{fmt.Sprintf("options.%d", resolve.MaxOptionRounds): choice(fmt.Sprintf("--flag%d", resolve.MaxOptionRounds), .99)},
+		map[string]model.Answer{catalog.VerifyQuestionID: noul(0)},
+	)
+	asker := &scriptedAsker{t: t, scripted: applyOperandSplit(script)}
+	result, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision.Verdict != resolve.VerdictAsk {
+		t.Fatalf("%+v", result)
+	}
+	if result.Rounds != resolve.MaxOptionRounds+1 {
+		t.Errorf("rounds = %d, want the walk plus the one repair", result.Rounds)
+	}
+	if len(result.Flags) != resolve.MaxOptionRounds+1 {
+		t.Errorf("flags = %v, want the repaired call even though it is not being offered", result.Flags)
+	}
+	// The promise is the bound, in requests: the word filter, the tool stage, the
+	// operand question, the rounds, the check, the repair, and the check that
+	// reads the repaired call.
+	if want := 3 + resolve.MaxOptionRounds + 3; len(asker.requests) != want {
+		t.Errorf("the model was asked %d times, want %d", len(asker.requests), want)
+	}
+	if len(asker.scripted) != 0 {
+		t.Errorf("%d scripted requests unused", len(asker.scripted))
+	}
+}
+
+func TestSubcommandVerificationUsesItsOwnDocumentation(t *testing.T) {
+	e := testEnv(t)
+	e.Request = "use git to show commit patches"
+	e.Commands = []string{"git"}
+	e.Docs["git"] = discover.Docs{Program: "git", Detail: "Root command documentation.", Subcommands: []discover.Subcommand{{Name: "log", Desc: "Show commit history."}}}
+	e.Docs["git log"] = discover.Docs{Program: "git log", Detail: "Patch output requires -p.", Options: []discover.Option{{Flags: []string{"-p"}, Desc: "Show patches."}}}
+	p, err := resolve.Build(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asker := &scriptedAsker{t: t, scripted: []map[string]model.Answer{
+		nomination("git"),
+		{"intent": choice("git", .99), "guardrail.tool_is_clear": noul(.99)},
+		{"operand?": noul(0)},
+		{"satisfied.0": noul(0), "options.0": choice("log", .99)},
+		{"satisfied.1": noul(0), "options.1": choice("-p", .99)},
+		{"satisfied.2": noul(.99)},
+		{catalog.SideEffectQuestionID: noul(.01)},
+	}}
+	result, err := p.Evaluate(context.Background(), asker, resolve.DecideOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.Decision.Argv, " ") != "git log -p" {
+		t.Fatal(result.Decision.Argv)
+	}
+	state := asker.requests[len(asker.requests)-1].State.(map[string]any)
+	selected := state["selected_program"].(map[string]any)
+	if selected["name"] != "git log" || selected["documentation"] != "Patch output requires -p." {
+		t.Fatalf("verification still saw root documentation: %v", selected)
 	}
 }

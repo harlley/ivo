@@ -1,4 +1,4 @@
-// Package catalog is the tool-calling layer at the bottom of jev-cli.
+// Package catalog is the tool-calling layer at the bottom of ivo.
 //
 // A tool is a name, a description and a list of typed parameters. The model
 // fills those parameters: it picks one tool, gives each closed parameter a
@@ -19,16 +19,23 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/harlleyoliveira/jev-cli/internal/discover"
-	"github.com/harlleyoliveira/jev-cli/internal/env"
-	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
+	"github.com/harlley/ivo/internal/discover"
+	"github.com/harlley/ivo/internal/env"
+	"github.com/harlley/ivo/internal/model"
 )
 
 // maxDiscoveredFlags caps how many of a program's documented options become
-// parameters. The cap is a guard against a program with hundreds of options, not
-// an attempt to pre-select: pre-selecting by keyword does not work, because a
-// manual describes "hidden files" as "names beginning with a dot".
-const maxDiscoveredFlags = 48
+// candidates, and maxOfferedOptions caps how many of those a single question
+// offers.
+//
+// The first cap is a guard against a program with hundreds of options. The
+// second is about attention: git log documents a hundred and fifty flags, and
+// offering all of them got "suppress progress reporting" for a request about the
+// last three commits.
+const (
+	maxDiscoveredFlags = 160
+	maxOfferedOptions  = 40
+)
 
 // DocumentedFlagThreshold is the probability a discovered option needs before
 // it lands. It is higher than FlagThreshold because dozens of options are asked
@@ -146,7 +153,7 @@ func (p Param) values(e *env.Env) []Value {
 }
 
 // AsQuestion builds the typed question for this parameter.
-func (p Param) AsQuestion(e *env.Env) typesafe.Question {
+func (p Param) AsQuestion(e *env.Env) model.Question {
 	if p.Kind == FlagParam {
 		yes, no := p.Yes, p.No
 		if yes == "" {
@@ -155,7 +162,7 @@ func (p Param) AsQuestion(e *env.Env) typesafe.Question {
 		if no == "" {
 			no = "The request asks for the opposite, or says nothing about it."
 		}
-		return typesafe.Noul(p.question(), &typesafe.NoulCriteria{True: yes, False: no})
+		return model.Noul(p.question(), &model.NoulCriteria{True: yes, False: no})
 	}
 	criteria := map[string]any{}
 	for _, v := range p.values(e) {
@@ -165,7 +172,7 @@ func (p Param) AsQuestion(e *env.Env) typesafe.Question {
 		}
 		criteria[v.Key] = v.Desc
 	}
-	return typesafe.Choice(p.question(), criteria)
+	return model.Choice(p.question(), criteria)
 }
 
 // threshold is how sure the model has to be before this parameter lands.
@@ -187,14 +194,14 @@ func (p Param) question() string {
 }
 
 // GateQuestion builds the "did the request say anything about this?" question.
-func (p Param) GateQuestion() typesafe.Question {
+func (p Param) GateQuestion() model.Question {
 	topic := p.Topic
 	if topic == "" {
 		topic = p.Desc
 	}
-	return typesafe.Noul(
-		fmt.Sprintf("Does the request say anything about %s?", topic),
-		&typesafe.NoulCriteria{
+	return model.Noul(
+		fmt.Sprintf("Does the request identify %s that must be passed positionally? A reference to the current project or directory identifies . as positional input when the program needs a path to open or act on it; use its documented default otherwise. Action names and output qualifiers are not positional input. A number used as an option value is not a positional operand.", topic),
+		&model.NoulCriteria{
 			True:  fmt.Sprintf("The request speaks to %s, even indirectly.", topic),
 			False: fmt.Sprintf("The request says nothing about %s, so the default should stand.", topic),
 		},
@@ -279,10 +286,11 @@ type Tool struct {
 	// What, NotFor and Examples describe the tool to the model. They are what
 	// keeps neighbouring tools from being confused.
 	What     string
+	Context  string
 	NotFor   string
 	Examples []string
 
-	// ReadOnly records that the tool cannot modify anything. jev-cli enforces
+	// ReadOnly records that the tool cannot modify anything. ivo enforces
 	// this in code; it is never the model's decision.
 	ReadOnly bool
 	// Needs lists binaries the tool cannot run without.
@@ -321,11 +329,45 @@ const FlagsPlaceholder = "{flags}"
 // This is what removes the need to catalogue a tool's capabilities by hand: the
 // flag surface comes from the manual.
 func DocumentedOptions(e *env.Env, program string) []discover.Option {
+	return discover.Relevant(AllDocumentedOptions(e, program), e.Request, maxOfferedOptions)
+}
+
+// AllDocumentedOptions is every option a program documents, with the numbers
+// the request mentions bound where they fit, and none of the narrowing.
+//
+// The narrowing is a trade and it is usually the right one: a question that
+// offers a hundred and fifty flags gets distracted answers. This is the other
+// side of that trade, and it is asked only when the narrow question has already
+// failed: the walk put options in front of the model, the model said the call
+// was not the whole answer and that nothing it was shown belonged in it, and
+// both answers together mean the option the request needs was never offered.
+func AllDocumentedOptions(e *env.Env, program string) []discover.Option {
 	docs, ok := e.Documentation(program)
 	if !ok {
 		return nil
 	}
-	return discover.Flags(docs, maxDiscoveredFlags)
+	options := discover.Candidates(docs, e.Request, discover.NamedValues{
+		Paths:    e.Candidates.Paths,
+		Patterns: e.Candidates.Patterns,
+		Terms:    e.Candidates.Terms,
+	}, model.MaxChoiceOptions-1)
+
+	return options
+}
+
+// subcommandOptions are the commands a program lists, as candidates for the
+// walk. A program that offers commands is asked about them before it is asked
+// about flags: "git log" is neither an option of git nor a program of its own.
+func SubcommandOptionsFor(e *env.Env, program string) []discover.Option {
+	return subcommandOptions(e, program)
+}
+
+func subcommandOptions(e *env.Env, program string) []discover.Option {
+	docs, ok := e.Documentation(program)
+	if !ok || len(docs.Subcommands) == 0 {
+		return nil
+	}
+	return discover.SubcommandCandidates(docs.Subcommands, model.MaxChoiceOptions-1)
 }
 
 // WordQuestion asks whether one word of the request names a program to run.
@@ -334,14 +376,14 @@ func DocumentedOptions(e *env.Env, program string) []discover.Option {
 // because a keyword match cannot tell a verb from a binary. "abra o projeto
 // atual no zed" contains one program name, and the question is asked once per
 // word, in parallel, so the whole filter costs one round trip.
-func WordQuestion(word string) typesafe.Question {
-	return typesafe.Noul(
+func WordQuestion(word string) model.Question {
+	return model.Noul(
 		map[string]any{
 			"word":     word,
 			"question": "Does the request use `word` as the name of a program to run?",
 			"focus":    "A verb or a noun of the sentence is not a program name, even when it looks like one.",
 		},
-		&typesafe.NoulCriteria{
+		&model.NoulCriteria{
 			True:  "`word` names a program the request wants executed.",
 			False: "`word` is an ordinary word of the sentence.",
 		},
@@ -354,6 +396,44 @@ func WordQuestionID(nth int) string { return fmt.Sprintf("word.%d", nth) }
 // WordThreshold is the probability at which a word counts as naming a program.
 const WordThreshold = 0.5
 
+// NamedInRequest returns the commands the request names, in the order they
+// appear.
+//
+// This is the cheapest tier of discovery and it needs no model at all: a word of
+// the phrase is already the name of something installed here, so there is
+// nothing to look up. "use git to list the last 3 commits" and "open the project
+// in zed" both arrive with their answer in the sentence, and asking the model
+// about two thousand commands to be told what the sentence already said was most
+// of what a call used to cost.
+//
+// A word that happens to be a command name and is not meant as one costs
+// nothing here: the tool question still asks the model which program fits, and
+// the escape hatch is still on the table.
+func NamedInRequest(e *env.Env) []string {
+	if len(e.Commands) == 0 {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, field := range strings.Fields(strings.ToLower(e.Request)) {
+		word := strings.Trim(field, "\"'`.,;:!?()[]{}<>*")
+		if word == "" || seen[word] || !e.HasCommand(word) {
+			continue
+		}
+		seen[word] = true
+		out = append(out, word)
+		if len(out) == maxNamedInRequest {
+			break
+		}
+	}
+	return out
+}
+
+// maxNamedInRequest caps the first tier, which is about the size of the tool
+// question rather than about correctness: a sentence that names ten commands is
+// a sentence this layer is about to refuse anyway.
+const maxNamedInRequest = 8
+
 // NamedProgram turns a command this machine can run into a tool. Nothing about
 // it is written here: its description comes from its own documentation, and its
 // options are read from there when the walk reaches it.
@@ -365,7 +445,7 @@ func NamedProgram(program discover.Program) Tool {
 	return Tool{
 		Name:     program.Name,
 		What:     what,
-		NotFor:   "Anything another tool in this list already does with a known shape.",
+		Context:  program.Detail,
 		ReadOnly: program.ReadOnly,
 		Needs:    []string{program.Name},
 		Bind: func(e *env.Env) (Binding, bool) {
@@ -374,18 +454,14 @@ func NamedProgram(program discover.Program) Tool {
 			// its own business: when the request names no path, the program is
 			// called without one.
 			//
-			// It also needs its own question id. The shaped tools share
-			// target_path and none of them gates it, so reusing the id would
-			// give one question two shapes, which the guard test exists to
-			// catch.
 			target.QID = "operand"
-			target.Topic = "a path or argument the program should act on"
+			target.Topic = "an explicit input value: a file or directory, text or a pattern to search for, a program whose documentation is requested, or another positional operand"
 			target.Gated = true
 			target.Default = "no_argument"
 			target.ValuesFor = func(e *env.Env) []Value {
 				values := []Value{{
 					Key:  "no_argument",
-					Desc: "No path at all: call the program with no operand.",
+					Desc: "No positional operand: the program uses its documented default scope. Do not choose this when a directory or other input must be supplied explicitly.",
 				}}
 				return append(values, targetValues(e)...)
 			}
@@ -405,18 +481,14 @@ func NamedProgram(program discover.Program) Tool {
 // by measuring: asking about every flag of every tool at once drowns the
 // decision in noise, and choosing from a list is the shape the model is good
 // at, because it only has to compare the request against documented purposes.
-func OptionQuestion(options []discover.Option, already []string, round int) typesafe.Question {
-	chosen := map[string]bool{}
-	for _, flag := range already {
-		chosen[flag] = true
-	}
+func OptionQuestion(options []discover.Option, already []string, round int) model.Question {
 	criteria := map[string]any{}
 	for _, option := range options {
-		if len(option.Flags) == 0 || chosen[option.Flags[0]] {
+		if len(option.Argv) == 0 || option.ConflictsWith(already) {
 			continue
 		}
-		key := option.Flags[0]
-		desc := discover.FirstSentence(option.Desc)
+		key := option.Key()
+		desc := option.Desc
 		if len(option.Flags) > 1 {
 			desc = strings.Join(option.Flags, ", ") + ": " + desc
 		}
@@ -429,6 +501,9 @@ func OptionQuestion(options []discover.Option, already []string, round int) type
 	instructions := map[string]any{
 		"question": "Which of these options should be added to the call so far?",
 	}
+	// The escape hatch is not decoration here: it is how the model says that
+	// nothing left is needed, which is one of the two ways the walk stops.
+	criteria[NoneKey] = "None of these: the call needs no further option."
 	if len(already) > 0 {
 		chosen := make([]string, 0, len(already))
 		for _, flag := range already {
@@ -440,17 +515,35 @@ func OptionQuestion(options []discover.Option, already []string, round int) type
 	if round > 0 {
 		instructions["question"] = "The call so far still does not satisfy the request. Which of these further options should be added?"
 	}
-	return typesafe.Choice(instructions, criteria)
+	return model.Choice(instructions, criteria)
+}
+
+// MissingOptionQuestion is OptionQuestion asked after the last check said the
+// call is not the whole answer. The options are the same; what changes is that
+// the model is told what the check found, which is the difference between
+// guessing at a next flag and being asked for the missing one.
+func MissingOptionQuestion(options []discover.Option, already []string, round int) model.Question {
+	question, ok := OptionQuestion(options, already, round).(model.ChoiceQuestion)
+	if !ok {
+		return question
+	}
+	instructions, ok := question.Instructions.(map[string]any)
+	if !ok {
+		return question
+	}
+	instructions["question"] = "The last check said this call is not yet the whole answer. Which of these options does the request still need?"
+	instructions["focus"] = "Choose the option that supplies the part the request names and this call does not have yet. Choose the escape hatch only when the call already has everything the request asks for."
+	return question
 }
 
 // describeOption renders one option the way the question refers to it.
-func describeOption(options []discover.Option, flag string) string {
+func describeOption(options []discover.Option, key string) string {
 	for _, option := range options {
-		if len(option.Flags) > 0 && option.Flags[0] == flag {
-			return flag + " (" + discover.FirstSentence(option.Desc) + ")"
+		if option.Key() == key {
+			return key + " (" + discover.FirstSentence(option.Desc) + ")"
 		}
 	}
-	return flag
+	return key
 }
 
 // SatisfiedQuestion asks whether the call built so far already answers the
@@ -459,17 +552,49 @@ func describeOption(options []discover.Option, flag string) string {
 //
 // The candidate is passed as structured data and referred to by name, so the
 // question itself stays short and stable across rounds.
-func SatisfiedQuestion(candidate string) typesafe.Question {
-	return typesafe.Noul(
+// satisfactionCriteria is the judgment both the walk and the last check make.
+//
+// It is deliberately strict, and it was not always: the earlier wording asked
+// whether the call "already does what the request asks for, as it stands", and
+// that reads as a question about whether the call is a reasonable start. It
+// answered yes for `git log -n 3` on a request that also asked for one line per
+// commit, so the walk stopped with the request half answered. Every part of the
+// request has to be named as something that would make the answer no.
+func satisfactionCriteria() *model.NoulCriteria {
+	return &model.NoulCriteria{
+		True:  "`candidate` performs the requested action or reports the requested information, including all explicit quantities and qualifiers. Documented default behavior counts; printing the requested information in the program's native output is sufficient.",
+		False: "`candidate` leaves out something the request names, such as a count, an order, a direction, a unit, or a second thing it asks for.",
+	}
+}
+
+// SatisfiedQuestion asks whether the call built so far is already the whole
+// answer, which is what stops the walk.
+func SatisfiedQuestion(candidate string) model.Question {
+	return model.Noul(
 		map[string]any{
 			"candidate": candidate,
-			"question":  "Does `candidate` satisfy the request, as it stands?",
-			"focus":     "Judge whether the call already does what the request asks for, without adding anything.",
+			"question":  "Is `candidate` a complete command-line response to the request?",
+			"focus":     "For an information request, printing the relevant measurements or records in the program's native format is sufficient. Do not require a prose answer, a derived summary, or units the user did not specify. Use the selected program's documentation and default behavior. Reject missing explicit counts, filters, ordering, actions or other qualifiers. Distinguish options that enable an output from options that only modify an already enabled output. A modifier does not enable the output it modifies. Reject missing required option values and extra operands that narrow or change the requested task. Ordinary words describing the action are not file names, revisions, patterns or option values.",
 		},
-		&typesafe.NoulCriteria{
-			True:  "`candidate` already does what the request asks for.",
-			False: "`candidate` is still missing something the request asks for.",
+		satisfactionCriteria(),
+	)
+}
+
+// VerifyQuestion asks the same question about the call the walk ended with.
+//
+// The walk can end without any round saying the call was enough: it runs out of
+// rounds, or the option question comes back with nothing worth adding, and the
+// last flag that was added was never judged. This is that judgment, asked once
+// about the final call, and it is the difference between showing a command and
+// being sure of it.
+func VerifyQuestion(candidate string) model.Question {
+	return model.Noul(
+		map[string]any{
+			"candidate": candidate,
+			"question":  "Is `candidate` a complete command-line response to the request?",
+			"focus":     "For an information request, printing the relevant measurements or records in the program's native format is sufficient. Do not require a prose answer, a derived summary, or units the user did not specify. Use the selected program's documentation and default behavior. Reject missing explicit counts, filters, ordering, actions or other qualifiers. Distinguish options that enable an output from options that only modify an already enabled output. A modifier does not enable the output it modifies. Reject missing required option values and extra operands that narrow or change the requested task. Ordinary words describing the action are not file names, revisions, patterns or option values.",
 		},
+		satisfactionCriteria(),
 	)
 }
 
@@ -479,14 +604,14 @@ func SatisfiedQuestion(candidate string) typesafe.Question {
 // about the resolved call rather than about the request, which is what makes it
 // usable for a tool space that is not written in code: a request to open an
 // editor in a project reads like a change, while the call zed . does not.
-func SideEffectQuestion(candidate string) typesafe.Question {
-	return typesafe.Noul(
+func SideEffectQuestion(candidate string) model.Question {
+	return model.Noul(
 		map[string]any{
 			"candidate": candidate,
 			"question":  "Would running `candidate` change anything on this machine, or reach the network?",
 			"focus":     "Judge the call itself: reading, listing, searching and opening something are not changes.",
 		},
-		&typesafe.NoulCriteria{
+		&model.NoulCriteria{
 			True:  "`candidate` deletes, moves, overwrites or creates data, installs or removes software, changes permissions, kills a process, or sends data over the network.",
 			False: "`candidate` only reads or displays something, or opens an application, and leaves the machine as it was.",
 		},
@@ -508,6 +633,9 @@ const SatisfiedThreshold = 0.5
 // questions.
 func SatisfiedQuestionID(round int) string { return fmt.Sprintf("satisfied.%d", round) }
 func OptionQuestionID(round int) string    { return fmt.Sprintf("options.%d", round) }
+
+// VerifyQuestionID is the last check, asked when no round confirmed the call.
+const VerifyQuestionID = "verify"
 
 // Available returns the tools that can run here and that have a real decision
 // to make in this environment.
@@ -563,10 +691,13 @@ func (b Binding) usable(e *env.Env) bool {
 // ToolQuestion builds the question that picks the tool. Its options are exactly
 // the available tool names, plus an escape hatch, so the answer can be used as
 // a key without any translation.
-func ToolQuestion(tools []Tool) typesafe.Question {
+func ToolQuestion(tools []Tool) model.Question {
 	criteria := map[string]any{}
 	for _, t := range tools {
 		desc := map[string]any{"what": t.What}
+		if t.Context != "" {
+			desc["documentation"] = t.Context
+		}
 		if t.NotFor != "" {
 			desc["not_for"] = t.NotFor
 		}
@@ -576,8 +707,8 @@ func ToolQuestion(tools []Tool) typesafe.Question {
 		criteria[t.Name] = desc
 	}
 	criteria[NoneKey] = "No tool in this list fits the request, or the request wants something no tool here does."
-	return typesafe.Choice(
-		"Which of the available tools should be called to satisfy the request?",
+	return model.Choice(
+		"Which installed program most directly satisfies all qualifiers in the user's request? Use each program's documented purpose. Prefer a specialized command that prints the requested information directly over a broad report, an interactive monitor, or an interpreter that would need new code. If the request explicitly names a program, prefer it when appropriate. Choose the best fit even when several programs have overlapping capabilities.",
 		criteria,
 	)
 }
@@ -587,8 +718,8 @@ func ToolQuestion(tools []Tool) typesafe.Question {
 // documented pattern: questions run in parallel, so a speculative question
 // costs tokens but not latency, and the code ignores the ones whose tool did
 // not win.
-func Questions(tools []Tool, bindings map[string]Binding, e *env.Env) map[string]typesafe.Question {
-	out := map[string]typesafe.Question{}
+func Questions(tools []Tool, bindings map[string]Binding, e *env.Env) map[string]model.Question {
+	out := map[string]model.Question{}
 	for _, t := range tools {
 		binding, ok := bindings[t.Name]
 		if !ok {
@@ -613,7 +744,7 @@ type Note struct {
 	Question string
 	Param    string
 	Detail   string
-	Answer   typesafe.Answer
+	Answer   model.Answer
 	Answered bool
 }
 
@@ -641,7 +772,7 @@ type filled struct {
 	qid      string
 	tokens   []string
 	value    any
-	answer   typesafe.Answer
+	answer   model.Answer
 	answered bool
 	weight   float64
 	// resolved records that the parameter got a real value. It is deliberately
@@ -657,7 +788,7 @@ type filled struct {
 // Fill reads only the answers belonging to the chosen tool and binds them to a
 // command line. Every token comes from a value this repository authored, or
 // from a path env confirmed exists.
-func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, flags []string, e *env.Env) (Result, error) {
+func Fill(tool Tool, binding Binding, answers map[string]model.Answer, flags []string, e *env.Env) (Result, error) {
 	if err := binding.Validate(tool.Name); err != nil {
 		return Result{}, err
 	}
@@ -753,20 +884,46 @@ func Fill(tool Tool, binding Binding, answers map[string]typesafe.Answer, flags 
 		call.Args[f.param.Name] = f.value
 	}
 
-	// The options chosen in the flag stage are validated against the option
-	// list the program documented, which is the closed set for this position.
-	allowedFlags := map[string]bool{}
-	for _, option := range DocumentedOptions(e, binding.Discover) {
-		if len(option.Flags) > 0 {
-			allowedFlags[option.Flags[0]] = true
+	// The options chosen in the flag stage are validated against what the
+	// program documents, which is the closed set for this position. The tokens a
+	// chosen answer stands for are looked up in that set, so an answer can only
+	// ever mean what the program documented.
+	//
+	// The set here is the whole documented list and not the narrowed one the
+	// question offers. Narrowing is about attention, which is the question's
+	// problem, and it has no business rejecting an option: it once did, and an
+	// option the walk had just offered came back as "not an option git
+	// documents".
+	answerTokens := map[string][]string{}
+	answerOptions := map[string]discover.Option{}
+	addCandidates := func(program string) {
+		for _, option := range AllDocumentedOptions(e, program) {
+			answerTokens[option.Key()] = option.Argv
+			answerOptions[option.Key()] = option
+		}
+		for _, sub := range subcommandOptions(e, program) {
+			answerTokens[sub.Key()] = sub.Argv
 		}
 	}
-	var chosenFlags []string
-	for _, flag := range flags {
-		if !allowedFlags[flag] {
-			return Result{}, fmt.Errorf("catalog: %q is not an option %s documents", flag, binding.Discover)
+	addCandidates(binding.Discover)
+	// A chosen command brings its own options with it, which is the whole point
+	// of the level: "git log" documents flags that "git" does not.
+	for _, key := range flags {
+		if _, isSubcommand := answerTokens[key]; isSubcommand && !strings.HasPrefix(key, "-") {
+			addCandidates(binding.Discover + " " + key)
 		}
-		chosenFlags = append(chosenFlags, flag)
+	}
+
+	var chosenFlags []string
+	for i, key := range flags {
+		if option, ok := answerOptions[key]; ok && option.ConflictsWith(flags[:i]) {
+			return Result{}, fmt.Errorf("catalog: conflicting repeated option %q", key)
+		}
+		tokens, ok := answerTokens[key]
+		if !ok {
+			return Result{}, fmt.Errorf("catalog: %q is not an option %s documents", key, binding.Discover)
+		}
+		chosenFlags = append(chosenFlags, tokens...)
 	}
 
 	// Bind: a placeholder contributes zero or more whole tokens, a literal
@@ -859,7 +1016,7 @@ func isProgramToken(tok string) bool {
 
 // Allowlist returns every program name that any available binding can place in
 // argv[0]. It is the last line of defence: even a bug in this catalog cannot
-// make jev-cli exec a program that is not on this list.
+// make ivo exec a program that is not on this list.
 func Allowlist(bindings map[string]Binding, e *env.Env) []string {
 	set := map[string]bool{}
 	for _, binding := range bindings {

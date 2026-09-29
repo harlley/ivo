@@ -73,7 +73,7 @@ func Validate(argv []string, allow []string) error {
 }
 
 // Do runs the command when asked. A non-zero exit from the child is reported
-// as an outcome, not as an error: jev-cli is a wrapper, and the child's status
+// as an outcome, not as an error: ivo is a wrapper, and the child's status
 // is its own.
 func Do(ctx context.Context, argv []string, opts Options) (Outcome, error) {
 	if err := Validate(argv, opts.Allow); err != nil {

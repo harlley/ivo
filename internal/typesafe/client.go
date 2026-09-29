@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/harlley/ivo/internal/model"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -29,7 +30,7 @@ const (
 	defaultMaxAttempts = 4
 
 	// userAgent identifies this client to the API.
-	userAgent = "jev-cli"
+	userAgent = "ivo"
 )
 
 // APIError is a non-2xx response from the TypeSafe API.
@@ -52,7 +53,7 @@ func (e *APIError) Error() string {
 	// 422s carry the offending field; make it obvious it is our bug, not the
 	// user's.
 	if e.Status == http.StatusUnprocessableEntity {
-		msg += " (request failed validation, this is a bug in the question shapes jev-cli sent)"
+		msg += " (request failed validation, this is a bug in the question shapes ivo sent)"
 	}
 	return msg
 }
@@ -74,17 +75,6 @@ func (e *APIError) Retryable() bool {
 
 // Unauthorized reports whether the API rejected our credentials.
 func (e *APIError) Unauthorized() bool { return e.Status == http.StatusUnauthorized }
-
-// Result is one completed evaluation.
-type Result struct {
-	Response *SystemOneResponse
-	// Raw is the response body exactly as received, for --explain and --json.
-	Raw []byte
-	// Latency is the wall-clock time of the request that succeeded.
-	Latency time.Duration
-	// Attempts is how many tries it took, including the successful one.
-	Attempts int
-}
 
 // Client talks to the TypeSafe API. The zero value is not usable; call
 // NewClient.
@@ -147,7 +137,7 @@ func (c *Client) BaseURL() string { return c.baseURL }
 // requests with few.
 func (c *Client) SystemOne(ctx context.Context, req SystemOneRequest) (*Result, error) {
 	if !c.HasAPIKey() {
-		return nil, fmt.Errorf("typesafe: no API key (set %s, or write it to the jev config file)", EnvAPIKey)
+		return nil, fmt.Errorf("typesafe: no API key (set %s, or write it to the ivo config file)", EnvAPIKey)
 	}
 	if req.Model == "" {
 		req.Model = DefaultModel
@@ -270,7 +260,7 @@ func backoff(attempt int, retryAfter time.Duration) time.Duration {
 	if d > maxRetryDelay {
 		d = maxRetryDelay
 	}
-	// Full jitter, so a fleet of jev invocations does not retry in lockstep.
+	// Full jitter, so a fleet of ivo invocations does not retry in lockstep.
 	jitter := time.Duration(rand.Int64N(int64(d/2) + 1))
 	return d/2 + jitter
 }
@@ -315,3 +305,10 @@ func IsAuthError(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.Unauthorized()
 }
+
+// Ask implements the provider-independent model adapter contract.
+func (c *Client) Ask(ctx context.Context, request SystemOneRequest) (*Result, error) {
+	return c.SystemOne(ctx, request)
+}
+
+var _ model.Adapter = (*Client)(nil)

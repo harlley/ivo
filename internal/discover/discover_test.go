@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/harlleyoliveira/jev-cli/internal/run"
+	"github.com/harlley/ivo/internal/run"
 )
 
 func loadFixture(t *testing.T, name string) string {
@@ -193,43 +193,72 @@ func contains(list []string, want string) bool {
 	return false
 }
 
-// TestChooseSourcePrefersHelpAndFallsBackToTheManual is the efficiency rule: the
-// help output is one cheap command written for this purpose, so it wins whenever
-// it actually documents something, and the manual is read only when it does not.
-func TestChooseSourcePrefersHelpAndFallsBackToTheManual(t *testing.T) {
-	full := func(source string, n int, bytes int) Docs {
-		docs := Docs{Program: "p", Source: source, Bytes: bytes}
+// TestChooseSourcePrefersHelpUntilItIsThin is the rule, and it has two
+// regression cases: git --help lists twenty-three subcommands and no options, so
+// measuring the source in options alone rejected it and fell back to a manual
+// page that documents neither; and bsdtar answers --help with thirteen options
+// while its manual documents ninety-two, so keeping help by default hid the flag
+// surface behind a usage summary.
+func TestChooseSourcePrefersHelpUntilItIsThin(t *testing.T) {
+	withOptions := func(source string, n int) Docs {
+		docs := Docs{Program: "p", Source: source}
 		for i := 0; i < n; i++ {
-			docs.Options = append(docs.Options, Option{Flags: []string{"-x"}})
+			docs.Options = append(docs.Options, Option{Flags: []string{"-x"}, Argv: []string{"-x"}})
+		}
+		return docs
+	}
+	withSubcommands := func(n int) Docs {
+		docs := Docs{Program: "git", Source: "help"}
+		for i := 0; i < n; i++ {
+			docs.Subcommands = append(docs.Subcommands, Subcommand{Name: "log", Desc: "Show commit logs"})
 		}
 		return docs
 	}
 
 	cases := []struct {
-		name             string
-		help, manual     Docs
-		helpOK, manualOK bool
-		wantSource       string
+		name         string
+		help, manual Docs
+		want         string
 	}{
-		{"help documents options, so the manual is never read", full("help", 40, 4000), full("man", 44, 18000), true, true, "help"},
-		{"help is a usage stub, so the manual wins", full("help", 2, 80), full("man", 44, 18000), true, true, "man"},
-		{"only the manual documents anything", full("help", 0, 40), full("man", 44, 18000), true, true, "man"},
-		{"only help works", full("help", 12, 900), Docs{}, true, false, "help"},
-		{"neither works", Docs{}, Docs{}, false, false, ""},
+		// A help output with a real list is not thin, so the loader never reads
+		// the manual and there is nothing to compare.
+		{"a real help list leaves nothing to compare", withOptions("help", 40), Docs{}, "help"},
+		{"a thin help loses to the fuller manual", withOptions("help", 13), withOptions("man", 92), "man"},
+		{"help documents only subcommands, and still wins", withSubcommands(23), withOptions("man", 44), "help"},
+		{"help is a usage stub, so the manual is the fallback", withOptions("help", 0), withOptions("man", 44), "man"},
+		{"the manual is a stub too, so there is nothing", withOptions("help", 0), withOptions("man", 0), ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			docs, ok := chooseSource(tc.help, tc.manual, tc.helpOK, tc.manualOK)
-			if tc.wantSource == "" {
+			docs, ok := chooseSource(tc.help, tc.manual)
+			if tc.want == "" {
 				if ok {
 					t.Fatalf("chose %q, want no source", docs.Source)
 				}
 				return
 			}
-			if !ok || docs.Source != tc.wantSource {
-				t.Fatalf("chose %q (ok=%v), want %q", docs.Source, ok, tc.wantSource)
+			if !ok || docs.Source != tc.want {
+				t.Fatalf("chose %q (ok=%v), want %q", docs.Source, ok, tc.want)
 			}
 		})
+	}
+}
+
+// TestThinHelpDrawsTheLineAtTheSummary pins the boundary, because it is the
+// only thing that decides whether a program pays for a manual as well.
+func TestThinHelpDrawsTheLineAtTheSummary(t *testing.T) {
+	count := func(n int) Docs {
+		docs := Docs{}
+		for i := 0; i < n; i++ {
+			docs.Options = append(docs.Options, Option{Flags: []string{"-x"}, Argv: []string{"-x"}})
+		}
+		return docs
+	}
+	if !thinHelp(count(helpIsThin - 1)) {
+		t.Errorf("a help output of %d options is a summary", helpIsThin-1)
+	}
+	if thinHelp(count(helpIsThin)) {
+		t.Errorf("a help output of %d options is the list", helpIsThin)
 	}
 }
 
@@ -333,5 +362,222 @@ func TestWordCandidatesKeepsShortNames(t *testing.T) {
 	// Repeats are asked once.
 	if got := WordCandidates("ls ls LS"); len(got) != 1 {
 		t.Errorf("WordCandidates = %v, want one entry", got)
+	}
+}
+
+// TestParseSubcommandsReadsACommandList is the case that made git unreachable:
+// git --help documents twenty-three commands and no options at all, so a reader
+// that only understood an OPTIONS section saw nothing.
+func TestParseSubcommandsReadsACommandList(t *testing.T) {
+	subcommands := ParseSubcommands(loadFixture(t, "help-git.txt"))
+	if len(subcommands) < 15 {
+		t.Fatalf("read %d commands, want git's own list", len(subcommands))
+	}
+
+	byName := map[string]Subcommand{}
+	for _, sub := range subcommands {
+		byName[sub.Name] = sub
+	}
+	for name, want := range map[string]string{
+		"clone":  "Clone a repository",
+		"commit": "Record changes",
+		"log":    "Show commit logs",
+	} {
+		sub, ok := byName[name]
+		if !ok {
+			t.Errorf("%q is missing from the command list", name)
+			continue
+		}
+		if !strings.Contains(sub.Desc, want) {
+			t.Errorf("%s description = %q, want it to mention %q", name, sub.Desc, want)
+		}
+	}
+	// Prose and synopsis lines are not commands.
+	for _, noise := range []string{"these", "usage", "or"} {
+		if _, ok := byName[noise]; ok {
+			t.Errorf("%q was read as a command", noise)
+		}
+	}
+}
+
+// TestCandidatesCarryTheValuesTheRequestMentions: "-n" needs a number, and the
+// only number this layer may use is one the request already said.
+func TestCandidatesCarryTheValuesTheRequestMentions(t *testing.T) {
+	docs := Docs{Program: "git log", Options: []Option{
+		{Flags: []string{"--oneline"}, Desc: "Show the commit log in one line."},
+		{Flags: []string{"-n", "--max-count"}, Arg: "number", Desc: "Limit the number of commits."},
+		{Flags: []string{"--author"}, Arg: "pattern", Desc: "Limit to an author."},
+	}}
+
+	candidates := Candidates(docs, "list the last 3 commits", NamedValues{}, 0)
+	keys := map[string]bool{}
+	for _, c := range candidates {
+		keys[c.Key()] = true
+	}
+	if !keys["--oneline"] {
+		t.Error("a boolean option should be offered")
+	}
+	if !keys["-n 3"] {
+		t.Errorf("the counted option should carry the number the request mentions, got %v", keys)
+	}
+	if keys["--author"] {
+		t.Error("an option whose value the request does not supply must not be offered")
+	}
+
+	// With no number in the request there is nothing to fill the count with.
+	for _, c := range Candidates(docs, "list the commits", NamedValues{}, 0) {
+		if strings.HasPrefix(c.Key(), "-n") {
+			t.Errorf("invented a value for -n: %q", c.Key())
+		}
+	}
+}
+
+func TestSubcommandCandidatesCarryTheCommands(t *testing.T) {
+	subs := []Subcommand{{Name: "log", Desc: "Show commit logs"}, {Name: "clone", Desc: "Clone a repository"}}
+	got := SubcommandCandidates(subs, 0)
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates", len(got))
+	}
+	if got[0].Key() != "log" || got[0].Argv[0] != "log" {
+		t.Errorf("first candidate = %+v, want the log command as one token", got[0])
+	}
+}
+
+// TestLoadReadsAProgramThatOnlyListsCommands is the end of the git story: the
+// program documents commands and no options, and the layer has to see it.
+func TestLoadReadsAProgramThatOnlyListsCommands(t *testing.T) {
+	docs, err := Load("git")
+	if err != nil {
+		t.Skipf("git is not usable here: %v", err)
+	}
+	if docs.Source != "help" {
+		t.Errorf("source = %q, want help: git --help documents its own commands", docs.Source)
+	}
+	if len(docs.Subcommands) < 10 {
+		t.Fatalf("read %d commands from %s (%d options)", len(docs.Subcommands), docs.Source, len(docs.Options))
+	}
+}
+
+// TestParseManKeepsAFlagNextToAPlaceholder is the git log count story. The
+// manual spells one option three ways:
+//
+//	-<number>, -n <number>, --max-count=<number>
+//
+// The first is a shape that cannot be typed, and the other two are flags whose
+// value is only named in the same breath. Testing the placeholder against the
+// whole spelling threw away -n and left git log unable to express a count.
+func TestParseManKeepsAFlagNextToAPlaceholder(t *testing.T) {
+	for _, tc := range []struct {
+		spec  string
+		flags []string
+		arg   string
+	}{
+		{"-<number>, -n <number>, --max-count=<number>", []string{"-n", "--max-count"}, "number"},
+		{"-n <number>, --max-count=<number>", []string{"-n", "--max-count"}, "number"},
+		{"-<number>, -n, --max-count", []string{"-n", "--max-count"}, ""},
+		{"-D <format>, --date=<format>", []string{"-D", "--date"}, "format"},
+		{"-a, --all", []string{"-a", "--all"}, ""},
+		{"--[no-]recurse-submodules", []string{"--recurse-submodules"}, ""},
+		{"--color[=WHEN], --colour[=WHEN]", []string{"--color", "--colour"}, "WHEN"},
+		{"-", nil, ""},
+	} {
+		flags, arg := parseSpec(tc.spec)
+		if strings.Join(flags, " ") != strings.Join(tc.flags, " ") {
+			t.Errorf("parseSpec(%q) flags = %v, want %v", tc.spec, flags, tc.flags)
+		}
+		if arg != tc.arg {
+			t.Errorf("parseSpec(%q) arg = %q, want %q", tc.spec, arg, tc.arg)
+		}
+	}
+}
+
+// TestParseManReadsGitLogCount walks the real manual page, because the fixture
+// above would keep passing even if the reader never reached that entry.
+func TestParseManReadsGitLogCount(t *testing.T) {
+	text := strings.Join([]string{
+		"OPTIONS",
+		"       -<number>, -n <number>, --max-count=<number>",
+		"           Limit the number of commits to output.",
+		"",
+		"       --follow",
+		"           List history beyond renames (works only for a single file).",
+	}, "\n")
+
+	byFlag := map[string]Option{}
+	for _, o := range ParseMan(text) {
+		for _, f := range o.Flags {
+			byFlag[f] = o
+		}
+	}
+	count, ok := byFlag["-n"]
+	if !ok {
+		t.Fatalf("no -n in %v", byFlag)
+	}
+	if count.Arg != "number" {
+		t.Errorf("-n arg = %q, want number", count.Arg)
+	}
+	if !strings.Contains(count.Desc, "Limit the number of commits") {
+		t.Errorf("-n desc = %q, want the count description", count.Desc)
+	}
+}
+
+// TestGitLogDocumentsItsCount is the integration half: the manual on this
+// machine must yield the count flag, because "list the last 3 commits" has no
+// other way to say three.
+func TestGitLogDocumentsItsCount(t *testing.T) {
+	docs, err := Load("git log")
+	if err != nil {
+		t.Skipf("git log is not readable here: %v", err)
+	}
+	if len(docs.Options) == 0 {
+		t.Skipf("read no options from %s", docs.Source)
+	}
+	for _, o := range docs.Options {
+		for _, f := range o.Flags {
+			if f == "-n" || f == "--max-count" {
+				return
+			}
+		}
+	}
+	t.Errorf("read %d options from %s and none of them take a count", len(docs.Options), docs.Source)
+}
+
+// TestCandidatesBindTheValuesTheRequestNames is the gap that made "grep for the
+// word timeout" come back as `grep -R -w .`: a flag whose value is a pattern or
+// a path was dropped entirely, because the only value this layer knew how to
+// bind was a number.
+func TestCandidatesBindTheValuesTheRequestNames(t *testing.T) {
+	docs := Docs{Program: "grep", Options: []Option{
+		{Flags: []string{"-e", "--regexp"}, Arg: "pattern", Desc: "Match the pattern."},
+		{Flags: []string{"--include"}, Arg: "glob", Desc: "Search only files matching the glob."},
+		{Flags: []string{"-f"}, Arg: "file", Desc: "Read patterns from a file."},
+		{Flags: []string{"-n", "--line-number"}, Desc: "Prefix each line with its number."},
+		{Flags: []string{"--binary-files"}, Arg: "type", Desc: "How to handle binary files."},
+	}}
+	values := NamedValues{
+		Paths:    []string{"notes.txt", "other.txt", "third.txt"},
+		Patterns: []string{"*.go"},
+		Terms:    []string{"timeout"},
+	}
+	keys := map[string]bool{}
+	for _, c := range Candidates(docs, "grep for timeout in the go files of notes.txt", values, 0) {
+		keys[c.Key()] = true
+	}
+	for _, want := range []string{"-e timeout", "--include *.go", "-f notes.txt", "-n"} {
+		if !keys[want] {
+			t.Errorf("expected %q among the candidates: %v", want, keys)
+		}
+	}
+	withPaths := 0
+	for key := range keys {
+		if strings.HasPrefix(key, "-f ") {
+			withPaths++
+		}
+	}
+	if withPaths > maxValuesPerFlag {
+		t.Errorf("the flag was offered with %d paths, want at most %d", withPaths, maxValuesPerFlag)
+	}
+	if keys["--binary-files"] {
+		t.Error("a placeholder this layer cannot fill from the request must not be offered")
 	}
 }

@@ -1,0 +1,55 @@
+{
+  "cases": [
+    {
+      "phrase": "how much memory this computer has available?",
+      "why": "discovers a memory reporting program without a named command or a predefined tool",
+      "verdict": "act",
+      "argv_any": [
+        [
+          "vm_stat"
+        ]
+      ]
+    },
+    {
+      "phrase": "how much disk space is available?",
+      "why": "discovers a filesystem usage program by purpose",
+      "verdict": "act",
+      "command": "df",
+      "argv_any": [
+        [
+          "df"
+        ]
+      ]
+    },
+    {
+      "phrase": "how long has this computer been running?",
+      "why": "discovers system uptime without naming the command",
+      "verdict": "act",
+      "command": "uptime",
+      "argv_any": [
+        [
+          "uptime"
+        ]
+      ]
+    },
+    {
+      "phrase": "list all files in this directory",
+      "why": "the same discovery pipeline handles file listing",
+      "verdict": "act",
+      "command": "ls",
+      "argv_not_has": [
+        "-a",
+        "-A"
+      ],
+      "argv_any": [
+        [
+          "ls"
+        ],
+        [
+          "ls",
+          "."
+        ]
+      ]
+    }
+  ]
+}

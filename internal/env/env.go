@@ -1,4 +1,4 @@
-// Package env probes the machine jev-cli is running on and turns that into the
+// Package env probes the machine ivo is running on and turns that into the
 // small, filtered `state` the model sees, plus the closed sets of candidate
 // values the model is allowed to choose from.
 //
@@ -20,7 +20,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/harlleyoliveira/jev-cli/internal/discover"
+	"github.com/harlley/ivo/internal/discover"
 )
 
 // Limits on how much context we are willing to put in front of the model.
@@ -54,7 +54,7 @@ type Candidates struct {
 	Terms []string
 }
 
-// Env is everything jev-cli knows about the current invocation before it asks
+// Env is everything ivo knows about the current invocation before it asks
 // the model anything.
 type Env struct {
 	Request string
@@ -116,7 +116,7 @@ func (e *Env) Documentation(program string) (discover.Docs, bool) {
 		return docs, true
 	}
 	docs, err := discover.Load(program)
-	if err != nil || len(docs.Options) == 0 {
+	if err != nil || !discover.DocumentsAnything(docs) {
 		return discover.Docs{}, false
 	}
 	if e.Docs == nil {
@@ -189,7 +189,7 @@ func loadDocs(programs []string, bins map[string]bool) map[string]discover.Docs 
 			continue
 		}
 		docs, err := discover.Load(program)
-		if err != nil || len(docs.Options) == 0 {
+		if err != nil || !discover.DocumentsAnything(docs) {
 			continue
 		}
 		out[program] = docs

@@ -1,0 +1,1119 @@
+<h1 class="Sh" id="OPTIONS"><a class="permalink" href="#OPTIONS">OPTIONS</a></h1>
+<p class="Pp">--follow</p>
+<div class="Bd-indent">Continue listing the history of a file beyond renames
+  (works only for a single file).</div>
+<p class="Pp">--no-decorate, --decorate[=short|full|auto|no]</p>
+<div class="Bd-indent">Print out the ref names of any commits that are shown. If
+  <i>short</i> is specified, the ref name prefixes <i>refs/heads/</i>,
+  <i>refs/tags/</i> and <i>refs/remotes/</i> will not be printed. If <i>full</i>
+  is specified, the full ref name (including prefix) will be printed. If
+  <i>auto</i> is specified, then if the output is going to a terminal, the ref
+  names are shown as if <i>short</i> were given, otherwise no ref names are
+  shown. The option <b>--decorate</b> is short-hand for <b>--decorate=short</b>.
+  Default to configuration value of <b>log.decorate</b> if configured,
+  otherwise, <b>auto</b>.</div>
+<p class="Pp">--decorate-refs=&lt;pattern&gt;,
+    --decorate-refs-exclude=&lt;pattern&gt;</p>
+<div class="Bd-indent">For each candidate reference, do not use it for
+  decoration if it matches any patterns given to <b>--decorate-refs-exclude</b>
+  or if it doesn&#x2019;t match any of the patterns given to
+  <b>--decorate-refs</b>. The <b>log.excludeDecoration</b> config option allows
+  excluding refs from the decorations, but an explicit <b>--decorate-refs</b>
+  pattern will override a match in <b>log.excludeDecoration</b>.
+<p class="Pp">If none of these options or config settings are given, then
+    references are used as decoration if they match <b>HEAD</b>,
+    <b>refs/heads/</b>, <b>refs/remotes/</b>, <b>refs/stash/</b>, or
+    <b>refs/tags/</b>.</p>
+</div>
+<p class="Pp">--clear-decorations</p>
+<div class="Bd-indent">When specified, this option clears all previous
+  <b>--decorate-refs</b> or <b>--decorate-refs-exclude</b> options and relaxes
+  the default decoration filter to include all references. This option is
+  assumed if the config value <b>log.initialDecorationSet</b> is set to
+  <b>all</b>.</div>
+<p class="Pp">--source</p>
+<div class="Bd-indent">Print out the ref name given on the command line by which
+  each commit was reached.</div>
+<p class="Pp">--[no-]mailmap, --[no-]use-mailmap</p>
+<div class="Bd-indent">Use mailmap file to map author and committer names and
+  email addresses to canonical real names and email addresses. See
+  <b>git-shortlog</b>(1).</div>
+<p class="Pp">--full-diff</p>
+<div class="Bd-indent">Without this flag, <b>git</b> <b>log</b> <b>-p</b>
+  <i>&lt;path&gt;</i>... shows commits that touch the specified paths, and diffs
+  about the same specified paths. With this, the full diff is shown for commits
+  that touch the specified paths; this means that &quot;&lt;path&gt;...&quot;
+  limits only commits, and doesn&#x2019;t limit diff for those commits.
+<p class="Pp">Note that this affects all diff-based output types, e.g. those
+    produced by <b>--stat</b>, etc.</p>
+</div>
+<p class="Pp">--log-size</p>
+<div class="Bd-indent">Include a line &#x201C;log size &lt;number&gt;&#x201D; in
+  the output for each commit, where &lt;number&gt; is the length of that
+  commit&#x2019;s message in bytes. Intended to speed up tools that read log
+  messages from <b>git</b> <b>log</b> output by allowing them to allocate space
+  in advance.</div>
+<p class="Pp">-L&lt;start&gt;,&lt;end&gt;:&lt;file&gt;,
+    -L:&lt;funcname&gt;:&lt;file&gt;</p>
+<div class="Bd-indent">Trace the evolution of the line range given by
+  <i>&lt;start&gt;,&lt;end&gt;</i>, or by the function name regex
+  <i>&lt;funcname&gt;</i>, within the <i>&lt;file&gt;</i>. You may not give any
+  pathspec limiters. This is currently limited to a walk starting from a single
+  revision, i.e., you may only give zero or one positive revision arguments, and
+  <i>&lt;start&gt;</i> and <i>&lt;end&gt;</i> (or <i>&lt;funcname&gt;</i>) must
+  exist in the starting revision. You can specify this option more than once.
+  Implies <b>--patch</b>. Patch output can be suppressed using
+  <b>--no-patch</b>, but other diff formats (namely <b>--raw</b>,
+  <b>--numstat</b>, <b>--shortstat</b>, <b>--dirstat</b>, <b>--summary</b>,
+  <b>--name-only</b>, <b>--name-status</b>, <b>--check</b>) are not currently
+  implemented.
+<p class="Pp"><i>&lt;start&gt;</i> and <i>&lt;end&gt;</i> can take one of these
+    forms:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;number
+<p class="Pp">If <i>&lt;start&gt;</i> or <i>&lt;end&gt;</i> is a number, it
+    specifies an absolute line number (lines count from 1).</p>
+</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>/regex/</b>
+<p class="Pp">This form will use the first line matching the given POSIX regex.
+    If <i>&lt;start&gt;</i> is a regex, it will search from the end of the
+    previous <b>-L</b> range, if any, otherwise from the start of file. If
+    <i>&lt;start&gt;</i> is <b>^/regex/</b>, it will search from the start of
+    file. If <i>&lt;end&gt;</i> is a regex, it will search starting at the line
+    given by <i>&lt;start&gt;</i>.</p>
+</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;+offset or -offset
+<p class="Pp">This is only valid for <i>&lt;end&gt;</i> and will specify a
+    number of lines before or after the line given by <i>&lt;start&gt;</i>.</p>
+</div>
+<p class="Pp">If <b>:</b><i>&lt;funcname&gt;</i> is given in place of
+    <i>&lt;start&gt;</i> and <i>&lt;end&gt;</i>, it is a regular expression that
+    denotes the range from the first funcname line that matches
+    <i>&lt;funcname&gt;</i>, up to the next funcname line.
+    <b>:</b><i>&lt;funcname&gt;</i> searches from the end of the previous
+    <b>-L</b> range, if any, otherwise from the start of file.
+    <b>^:</b><i>&lt;funcname&gt;</i> searches from the start of file. The
+    function names are determined in the same way as <b>git</b> <b>diff</b>
+    works out patch hunk headers (see <i>Defining a custom hunk-header</i> in
+    <b>gitattributes</b>(5)).</p>
+</div>
+<p class="Pp">&lt;revision-range&gt;</p>
+<div class="Bd-indent">Show only commits in the specified revision range. When
+  no &lt;revision-range&gt; is specified, it defaults to <b>HEAD</b> (i.e. the
+  whole history leading to the current commit).
+  <b>origin</b><b>..</b><b>HEAD</b> specifies all the commits reachable from the
+  current commit (i.e. <b>HEAD</b>), but not from <b>origin</b>. For a complete
+  list of ways to spell &lt;revision-range&gt;, see the <i>Specifying Ranges</i>
+  section of <b>gitrevisions</b>(7).</div>
+<p class="Pp">[--] &lt;path&gt;...</p>
+<div class="Bd-indent">Show only commits that are enough to explain how the
+  files that match the specified paths came to be. See <i>History
+  Simplification</i> below for details and other simplification modes.
+<p class="Pp">Paths may need to be prefixed with <b>--</b> to separate them from
+    options or the revision range, when confusion arises.</p>
+</div>
+<section class="Ss">
+<h2 class="Ss" id="Commit_Limiting"><a class="permalink" href="#Commit_Limiting">Commit
+  Limiting</a></h2>
+<p class="Pp">Besides specifying a range of commits that should be listed using
+    the special notations explained in the description, additional commit
+    limiting may be applied.</p>
+<p class="Pp">Using more options generally further limits the output (e.g.
+    <b>--since=</b><i>&lt;date1&gt;</i> limits to commits newer than
+    <i>&lt;date1&gt;</i>, and using it with <b>--grep=</b><i>&lt;pattern&gt;</i>
+    further limits to commits whose log message has a line that matches
+    <i>&lt;pattern&gt;</i>), unless otherwise noted.</p>
+<p class="Pp">Note that these are applied before commit ordering and formatting
+    options, such as <b>--reverse</b>.</p>
+<p class="Pp">-&lt;number&gt;, -n &lt;number&gt;, --max-count=&lt;number&gt;</p>
+<div class="Bd-indent">Limit the number of commits to output.</div>
+<p class="Pp">--skip=&lt;number&gt;</p>
+<div class="Bd-indent">Skip <i>number</i> commits before starting to show the
+  commit output.</div>
+<p class="Pp">--since=&lt;date&gt;, --after=&lt;date&gt;</p>
+<div class="Bd-indent">Show commits more recent than a specific date.</div>
+<p class="Pp">--since-as-filter=&lt;date&gt;</p>
+<div class="Bd-indent">Show all commits more recent than a specific date. This
+  visits all commits in the range, rather than stopping at the first commit
+  which is older than a specific date.</div>
+<p class="Pp">--until=&lt;date&gt;, --before=&lt;date&gt;</p>
+<div class="Bd-indent">Show commits older than a specific date.</div>
+<p class="Pp">--author=&lt;pattern&gt;, --committer=&lt;pattern&gt;</p>
+<div class="Bd-indent">Limit the commits output to ones with author/committer
+  header lines that match the specified pattern (regular expression). With more
+  than one <b>--author=</b><i>&lt;pattern&gt;</i>, commits whose author matches
+  any of the given patterns are chosen (similarly for multiple
+  <b>--committer=</b><i>&lt;pattern&gt;</i>).</div>
+<p class="Pp">--grep-reflog=&lt;pattern&gt;</p>
+<div class="Bd-indent">Limit the commits output to ones with reflog entries that
+  match the specified pattern (regular expression). With more than one
+  <b>--grep-reflog</b>, commits whose reflog message matches any of the given
+  patterns are chosen. It is an error to use this option unless
+  <b>--walk-reflogs</b> is in use.</div>
+<p class="Pp">--grep=&lt;pattern&gt;</p>
+<div class="Bd-indent">Limit the commits output to ones with a log message that
+  matches the specified pattern (regular expression). With more than one
+  <b>--grep=</b><i>&lt;pattern&gt;</i>, commits whose message matches any of the
+  given patterns are chosen (but see <b>--all-match</b>).
+<p class="Pp">When <b>--notes</b> is in effect, the message from the notes is
+    matched as if it were part of the log message.</p>
+</div>
+<p class="Pp">--all-match</p>
+<div class="Bd-indent">Limit the commits output to ones that match all given
+  <b>--grep</b>, instead of ones that match at least one.</div>
+<p class="Pp">--invert-grep</p>
+<div class="Bd-indent">Limit the commits output to ones with a log message that
+  do not match the pattern specified with
+  <b>--grep=</b><i>&lt;pattern&gt;</i>.</div>
+<p class="Pp">-i, --regexp-ignore-case</p>
+<div class="Bd-indent">Match the regular expression limiting patterns without
+  regard to letter case.</div>
+<p class="Pp">--basic-regexp</p>
+<div class="Bd-indent">Consider the limiting patterns to be basic regular
+  expressions; this is the default.</div>
+<p class="Pp">-E, --extended-regexp</p>
+<div class="Bd-indent">Consider the limiting patterns to be extended regular
+  expressions instead of the default basic regular expressions.</div>
+<p class="Pp">-F, --fixed-strings</p>
+<div class="Bd-indent">Consider the limiting patterns to be fixed strings
+  (don&#x2019;t interpret pattern as a regular expression).</div>
+<p class="Pp">-P, --perl-regexp</p>
+<div class="Bd-indent">Consider the limiting patterns to be Perl-compatible
+  regular expressions.
+<p class="Pp">Support for these types of regular expressions is an optional
+    compile-time dependency. If Git wasn&#x2019;t compiled with support for them
+    providing this option will cause it to die.</p>
+</div>
+<p class="Pp">--remove-empty</p>
+<div class="Bd-indent">Stop when a given path disappears from the tree.</div>
+<p class="Pp">--merges</p>
+<div class="Bd-indent">Print only merge commits. This is exactly the same as
+  <b>--min-parents=2</b>.</div>
+<p class="Pp">--no-merges</p>
+<div class="Bd-indent">Do not print commits with more than one parent. This is
+  exactly the same as <b>--max-parents=1</b>.</div>
+<p class="Pp">--min-parents=&lt;number&gt;, --max-parents=&lt;number&gt;,
+    --no-min-parents, --no-max-parents</p>
+<div class="Bd-indent">Show only commits which have at least (or at most) that
+  many parent commits. In particular, <b>--max-parents=1</b> is the same as
+  <b>--no-merges</b>, <b>--min-parents=2</b> is the same as <b>--merges</b>.
+  <b>--max-parents=0</b> gives all root commits and <b>--min-parents=3</b> all
+  octopus merges.
+<p class="Pp"><b>--no-min-parents</b> and <b>--no-max-parents</b> reset these
+    limits (to no limit) again. Equivalent forms are <b>--min-parents=0</b> (any
+    commit has 0 or more parents) and <b>--max-parents=-1</b> (negative numbers
+    denote no upper limit).</p>
+</div>
+<p class="Pp">--first-parent</p>
+<div class="Bd-indent">When finding commits to include, follow only the first
+  parent commit upon seeing a merge commit. This option can give a better
+  overview when viewing the evolution of a particular topic branch, because
+  merges into a topic branch tend to be only about adjusting to updated upstream
+  from time to time, and this option allows you to ignore the individual commits
+  brought in to your history by such a merge.
+<p class="Pp">This option also changes default diff format for merge commits to
+    <b>first-parent</b>, see <b>--diff-merges=first-parent</b> for details.</p>
+</div>
+<p class="Pp">--exclude-first-parent-only</p>
+<div class="Bd-indent">When finding commits to exclude (with a <i>^</i>), follow
+  only the first parent commit upon seeing a merge commit. This can be used to
+  find the set of changes in a topic branch from the point where it diverged
+  from the remote branch, given that arbitrary merges can be valid topic branch
+  changes.</div>
+<p class="Pp">--not</p>
+<div class="Bd-indent">Reverses the meaning of the <i>^</i> prefix (or lack
+  thereof) for all following revision specifiers, up to the next <b>--not</b>.
+  When used on the command line before --stdin, the revisions passed through
+  stdin will not be affected by it. Conversely, when passed via standard input,
+  the revisions passed on the command line will not be affected by it.</div>
+<p class="Pp">--all</p>
+<div class="Bd-indent">Pretend as if all the refs in <b>refs/</b>, along with
+  <b>HEAD</b>, are listed on the command line as <i>&lt;commit&gt;</i>.</div>
+<p class="Pp">--branches[=&lt;pattern&gt;]</p>
+<div class="Bd-indent">Pretend as if all the refs in <b>refs/heads</b> are
+  listed on the command line as <i>&lt;commit&gt;</i>. If <i>&lt;pattern&gt;</i>
+  is given, limit branches to ones matching given shell glob. If pattern lacks
+  <i>?</i>, <i>*</i>, or <i>[</i>, <i>/*</i> at the end is implied.</div>
+<p class="Pp">--tags[=&lt;pattern&gt;]</p>
+<div class="Bd-indent">Pretend as if all the refs in <b>refs/tags</b> are listed
+  on the command line as <i>&lt;commit&gt;</i>. If <i>&lt;pattern&gt;</i> is
+  given, limit tags to ones matching given shell glob. If pattern lacks
+  <i>?</i>, <i>*</i>, or <i>[</i>, <i>/*</i> at the end is implied.</div>
+<p class="Pp">--remotes[=&lt;pattern&gt;]</p>
+<div class="Bd-indent">Pretend as if all the refs in <b>refs/remotes</b> are
+  listed on the command line as <i>&lt;commit&gt;</i>. If <i>&lt;pattern&gt;</i>
+  is given, limit remote-tracking branches to ones matching given shell glob. If
+  pattern lacks <i>?</i>, <i>*</i>, or <i>[</i>, <i>/*</i> at the end is
+  implied.</div>
+<p class="Pp">--glob=&lt;glob-pattern&gt;</p>
+<div class="Bd-indent">Pretend as if all the refs matching shell glob
+  <i>&lt;glob-pattern&gt;</i> are listed on the command line as
+  <i>&lt;commit&gt;</i>. Leading <i>refs/</i>, is automatically prepended if
+  missing. If pattern lacks <i>?</i>, <i>*</i>, or <i>[</i>, <i>/*</i> at the
+  end is implied.</div>
+<p class="Pp">--exclude=&lt;glob-pattern&gt;</p>
+<div class="Bd-indent">Do not include refs matching <i>&lt;glob-pattern&gt;</i>
+  that the next <b>--all</b>, <b>--branches</b>, <b>--tags</b>,
+  <b>--remotes</b>, or <b>--glob</b> would otherwise consider. Repetitions of
+  this option accumulate exclusion patterns up to the next <b>--all</b>,
+  <b>--branches</b>, <b>--tags</b>, <b>--remotes</b>, or <b>--glob</b> option
+  (other options or arguments do not clear accumulated patterns).
+<p class="Pp">The patterns given should not begin with <b>refs/heads</b>,
+    <b>refs/tags</b>, or <b>refs/remotes</b> when applied to <b>--branches</b>,
+    <b>--tags</b>, or <b>--remotes</b>, respectively, and they must begin with
+    <b>refs/</b> when applied to <b>--glob</b> or <b>--all</b>. If a trailing
+    <i>/*</i> is intended, it must be given explicitly.</p>
+</div>
+<p class="Pp">--exclude-hidden=[fetch|receive|uploadpack]</p>
+<div class="Bd-indent">Do not include refs that would be hidden by
+  <b>git-fetch</b>, <b>git-receive-pack</b> or <b>git-upload-pack</b> by
+  consulting the appropriate <b>fetch.hideRefs</b>, <b>receive.hideRefs</b> or
+  <b>uploadpack.hideRefs</b> configuration along with <b>transfer.hideRefs</b>
+  (see <b>git-config</b>(1)). This option affects the next pseudo-ref option
+  <b>--all</b> or <b>--glob</b> and is cleared after processing them.</div>
+<p class="Pp">--reflog</p>
+<div class="Bd-indent">Pretend as if all objects mentioned by reflogs are listed
+  on the command line as <i>&lt;commit&gt;</i>.</div>
+<p class="Pp">--alternate-refs</p>
+<div class="Bd-indent">Pretend as if all objects mentioned as ref tips of
+  alternate repositories were listed on the command line. An alternate
+  repository is any repository whose object directory is specified in
+  <b>objects/info/alternates</b>. The set of included objects may be modified by
+  <b>core.alternateRefsCommand</b>, etc. See <b>git-config</b>(1).</div>
+<p class="Pp">--single-worktree</p>
+<div class="Bd-indent">By default, all working trees will be examined by the
+  following options when there are more than one (see <b>git-worktree</b>(1)):
+  <b>--all</b>, <b>--reflog</b> and <b>--indexed-objects</b>. This option forces
+  them to examine the current working tree only.</div>
+<p class="Pp">--ignore-missing</p>
+<div class="Bd-indent">Upon seeing an invalid object name in the input, pretend
+  as if the bad input was not given.</div>
+<p class="Pp">--bisect</p>
+<div class="Bd-indent">Pretend as if the bad bisection ref
+  <b>refs/bisect/bad</b> was listed and as if it was followed by <b>--not</b>
+  and the good bisection refs <b>refs/bisect/good-*</b> on the command
+  line.</div>
+<p class="Pp">--stdin</p>
+<div class="Bd-indent">In addition to getting arguments from the command line,
+  read them from standard input as well. This accepts commits and pseudo-options
+  like <b>--all</b> and <b>--glob=</b>. When a <b>--</b> separator is seen, the
+  following input is treated as paths and used to limit the result. Flags like
+  <b>--not</b> which are read via standard input are only respected for
+  arguments passed in the same way and will not influence any subsequent command
+  line arguments.</div>
+<p class="Pp">--cherry-mark</p>
+<div class="Bd-indent">Like <b>--cherry-pick</b> (see below) but mark equivalent
+  commits with <b>=</b> rather than omitting them, and inequivalent ones with
+  <b>+</b>.</div>
+<p class="Pp">--cherry-pick</p>
+<div class="Bd-indent">Omit any commit that introduces the same change as
+  another commit on the &#x201C;other side&#x201D; when the set of commits are
+  limited with symmetric difference.
+<p class="Pp">For example, if you have two branches, <b>A</b> and <b>B</b>, a
+    usual way to list all commits on only one side of them is with
+    <b>--left-right</b> (see the example below in the description of the
+    <b>--left-right</b> option). However, it shows the commits that were
+    cherry-picked from the other branch (for example, &#x201C;3rd on b&#x201D;
+    may be cherry-picked from branch A). With this option, such pairs of commits
+    are excluded from the output.</p>
+</div>
+<p class="Pp">--left-only, --right-only</p>
+<div class="Bd-indent">List only commits on the respective side of a symmetric
+  difference, i.e. only those which would be marked &lt; resp. &gt; by
+  <b>--left-right</b>.
+<p class="Pp">For example, <b>--cherry-pick</b> <b>--right-only</b>
+    <b>A</b><b>...</b><b>B</b> omits those commits from <b>B</b> which are in
+    <b>A</b> or are patch-equivalent to a commit in <b>A</b>. In other words,
+    this lists the <b>+</b> commits from <b>git</b> <b>cherry</b> <b>A</b>
+    <b>B</b>. More precisely, <b>--cherry-pick</b> <b>--right-only</b>
+    <b>--no-merges</b> gives the exact list.</p>
+</div>
+<p class="Pp">--cherry</p>
+<div class="Bd-indent">A synonym for <b>--right-only</b> <b>--cherry-mark</b>
+  <b>--no-merges</b>; useful to limit the output to the commits on our side and
+  mark those that have been applied to the other side of a forked history with
+  <b>git</b> <b>log</b> <b>--cherry</b>
+  <b>upstream</b><b>...</b><b>mybranch</b>, similar to <b>git</b> <b>cherry</b>
+  <b>upstream</b> <b>mybranch</b>.</div>
+<p class="Pp">-g, --walk-reflogs</p>
+<div class="Bd-indent">Instead of walking the commit ancestry chain, walk reflog
+  entries from the most recent one to older ones. When this option is used you
+  cannot specify commits to exclude (that is, <i>^commit</i>,
+  <i>commit1..commit2</i>, and <i>commit1...commit2</i> notations cannot be
+  used).
+<p class="Pp">With <b>--pretty</b> format other than <b>oneline</b> and
+    <b>reference</b> (for obvious reasons), this causes the output to have two
+    extra lines of information taken from the reflog. The reflog designator in
+    the output may be shown as <b>ref@</b>{<i>&lt;Nth&gt;</i>} (where
+    <i>&lt;Nth&gt;</i> is the reverse-chronological index in the reflog) or as
+    <b>ref@</b>{<i>&lt;timestamp&gt;</i>} (with the <i>&lt;timestamp&gt;</i> for
+    that entry), depending on a few rules:</p>
+<p class="Pp"></p>
+<div class="Bd-indent"> 1.If the starting point is specified as
+  <b>ref@</b>{<i>&lt;Nth&gt;</i>}, show the index format.</div>
+<p class="Pp"></p>
+<div class="Bd-indent"> 2.If the starting point was specified as
+  <b>ref@</b>{now}, show the timestamp format.</div>
+<p class="Pp"></p>
+<div class="Bd-indent"> 3.If neither was used, but <b>--date</b> was given on
+  the command line, show the timestamp in the format requested by
+  <b>--date</b>.</div>
+<p class="Pp"></p>
+<div class="Bd-indent"> 4.Otherwise, show the index format.</div>
+<p class="Pp">Under <b>--pretty=oneline</b>, the commit message is prefixed with
+    this information on the same line. This option cannot be combined with
+    <b>--reverse</b>. See also <b>git-reflog</b>(1).</p>
+<p class="Pp">Under <b>--pretty=reference</b>, this information will not be
+    shown at all.</p>
+</div>
+<p class="Pp">--merge</p>
+<div class="Bd-indent">Show commits touching conflicted paths in the range
+  <b>HEAD</b><b>...</b><i>&lt;other&gt;</i>, where <i>&lt;other&gt;</i> is the
+  first existing pseudoref in <b>MERGE_HEAD</b>, <b>CHERRY_PICK_HEAD</b>,
+  <b>REVERT_HEAD</b> or <b>REBASE_HEAD</b>. Only works when the index has
+  unmerged entries. This option can be used to show relevant commits when
+  resolving conflicts from a 3-way merge.</div>
+<p class="Pp">--boundary</p>
+<div class="Bd-indent">Output excluded boundary commits. Boundary commits are
+  prefixed with <b>-</b>.</div>
+</section>
+<section class="Ss">
+<h2 class="Ss" id="History_Simplification"><a class="permalink" href="#History_Simplification">History
+  Simplification</a></h2>
+<p class="Pp">Sometimes you are only interested in parts of the history, for
+    example the commits modifying a particular &lt;path&gt;. But there are two
+    parts of <i>History Simplification</i>, one part is selecting the commits
+    and the other is how to do it, as there are various strategies to simplify
+    the history.</p>
+<p class="Pp">The following options select the commits to be shown:</p>
+<p class="Pp">&lt;paths&gt;</p>
+<div class="Bd-indent">Commits modifying the given &lt;paths&gt; are
+  selected.</div>
+<p class="Pp">--simplify-by-decoration</p>
+<div class="Bd-indent">Commits that are referred by some branch or tag are
+  selected.</div>
+<p class="Pp">Note that extra commits can be shown to give a meaningful
+  history.</p>
+<p class="Pp">The following options affect the way the simplification is
+    performed:</p>
+<p class="Pp">Default mode</p>
+<div class="Bd-indent">Simplifies the history to the simplest history explaining
+  the final state of the tree. Simplest because it prunes some side branches if
+  the end result is the same (i.e. merging branches with the same content)</div>
+<p class="Pp">--show-pulls</p>
+<div class="Bd-indent">Include all commits from the default mode, but also any
+  merge commits that are not TREESAME to the first parent but are TREESAME to a
+  later parent. This mode is helpful for showing the merge commits that
+  &quot;first introduced&quot; a change to a branch.</div>
+<p class="Pp">--full-history</p>
+<div class="Bd-indent">Same as the default mode, but does not prune some
+  history.</div>
+<p class="Pp">--dense</p>
+<div class="Bd-indent">Only the selected commits are shown, plus some to have a
+  meaningful history.</div>
+<p class="Pp">--sparse</p>
+<div class="Bd-indent">All commits in the simplified history are shown.</div>
+<p class="Pp">--simplify-merges</p>
+<div class="Bd-indent">Additional option to <b>--full-history</b> to remove some
+  needless merges from the resulting history, as there are no selected commits
+  contributing to this merge.</div>
+<p class="Pp">--ancestry-path[=&lt;commit&gt;]</p>
+<div class="Bd-indent">When given a range of commits to display (e.g.
+  <i>commit1..commit2</i> or <i>commit2 ^commit1</i>), and a commit
+  &lt;commit&gt; in that range, only display commits in that range that are
+  ancestors of &lt;commit&gt;, descendants of &lt;commit&gt;, or &lt;commit&gt;
+  itself. If no commit is specified, use <i>commit1</i> (the excluded part of
+  the range) as &lt;commit&gt;. Can be passed multiple times; if so, a commit is
+  included if it is any of the commits given or if it is an ancestor or
+  descendant of one of them.</div>
+<p class="Pp">A more detailed explanation follows.</p>
+<p class="Pp">Suppose you specified <b>foo</b> as the &lt;paths&gt;. We shall
+    call commits that modify <b>foo</b> !TREESAME, and the rest TREESAME. (In a
+    diff filtered for <b>foo</b>, they look different and equal,
+  respectively.)</p>
+<p class="Pp">In the following, we will always refer to the same example history
+    to illustrate the differences between simplification settings. We assume
+    that you are filtering for a file <b>foo</b> in this commit graph:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+          .-A---M---N---O---P---Q
+<br/>
+         /     /   /   /   /   /
+<br/>
+        I     B   C   D   E   Y
+<br/>
+         \   /   /   /   /   /
+<br/>
+          `-------------'   X</pre>
+</div>
+<p class="Pp">The horizontal line of history A---Q is taken to be the first
+    parent of each merge. The commits are:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>I</b> is the initial commit, in which
+  <b>foo</b> exists with contents &#x201C;asdf&#x201D;, and a file <b>quux</b>
+  exists with contents &#x201C;quux&#x201D;. Initial commits are compared to an
+  empty tree, so <b>I</b> is !TREESAME.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;In <b>A</b>, <b>foo</b> contains just
+  &#x201C;foo&#x201D;.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>B</b> contains the same change as <b>A</b>.
+  Its merge <b>M</b> is trivial and hence TREESAME to all parents.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>C</b> does not change <b>foo</b>, but its
+  merge <b>N</b> changes it to &#x201C;foobar&#x201D;, so it is not TREESAME to
+  any parent.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>D</b> sets <b>foo</b> to &#x201C;baz&#x201D;.
+  Its merge <b>O</b> combines the strings from <b>N</b> and <b>D</b> to
+  &#x201C;foobarbaz&#x201D;; i.e., it is not TREESAME to any parent.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>E</b> changes <b>quux</b> to
+  &#x201C;xyzzy&#x201D;, and its merge <b>P</b> combines the strings to
+  &#x201C;quux xyzzy&#x201D;. <b>P</b> is TREESAME to <b>O</b>, but not to
+  <b>E</b>.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>X</b> is an independent root commit that added
+  a new file <b>side</b>, and <b>Y</b> modified it. <b>Y</b> is TREESAME to
+  <b>X</b>. Its merge <b>Q</b> added <b>side</b> to <b>P</b>, and <b>Q</b> is
+  TREESAME to <b>P</b>, but not to <b>Y</b>.</div>
+<p class="Pp"><b>rev-list</b> walks backwards through history, including or
+    excluding commits based on whether <b>--full-history</b> and/or parent
+    rewriting (via <b>--parents</b> or <b>--children</b>) are used. The
+    following settings are available.</p>
+<p class="Pp">Default mode</p>
+<div class="Bd-indent">Commits are included if they are not TREESAME to any
+  parent (though this can be changed, see <b>--sparse</b> below). If the commit
+  was a merge, and it was TREESAME to one parent, follow only that parent. (Even
+  if there are several TREESAME parents, follow only one of them.) Otherwise,
+  follow all parents.
+<p class="Pp">This results in:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+          .-A---N---O
+<br/>
+         /     /   /
+<br/>
+        I---------D</pre>
+</div>
+<p class="Pp">Note how the rule to only follow the TREESAME parent, if one is
+    available, removed <b>B</b> from consideration entirely. <b>C</b> was
+    considered via <b>N</b>, but is TREESAME. Root commits are compared to an
+    empty tree, so <b>I</b> is !TREESAME.</p>
+<p class="Pp">Parent/child relations are only visible with <b>--parents</b>, but
+    that does not affect the commits selected in default mode, so we have shown
+    the parent lines.</p>
+</div>
+<p class="Pp">--full-history without parent rewriting</p>
+<div class="Bd-indent">This mode differs from the default in one point: always
+  follow all parents of a merge, even if it is TREESAME to one of them. Even if
+  more than one side of the merge has commits that are included, this does not
+  imply that the merge itself is! In the example, we get
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+        I  A  B  N  D  O  P  Q</pre>
+</div>
+<p class="Pp"><b>M</b> was excluded because it is TREESAME to both parents.
+    <b>E</b>, <b>C</b> and <b>B</b> were all walked, but only <b>B</b> was
+    !TREESAME, so the others do not appear.</p>
+<p class="Pp">Note that without parent rewriting, it is not really possible to
+    talk about the parent/child relationships between the commits, so we show
+    them disconnected.</p>
+</div>
+<p class="Pp">--full-history with parent rewriting</p>
+<div class="Bd-indent">Ordinary commits are only included if they are !TREESAME
+  (though this can be changed, see <b>--sparse</b> below).
+<p class="Pp">Merges are always included. However, their parent list is
+    rewritten: Along each parent, prune away commits that are not included
+    themselves. This results in</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+          .-A---M---N---O---P---Q
+<br/>
+         /     /   /   /   /
+<br/>
+        I     B   /   D   /
+<br/>
+         \   /   /   /   /
+<br/>
+          `-------------'</pre>
+</div>
+<p class="Pp">Compare to <b>--full-history</b> without rewriting above. Note
+    that <b>E</b> was pruned away because it is TREESAME, but the parent list of
+    P was rewritten to contain <b>E</b>'s parent <b>I</b>. The same happened for
+    <b>C</b> and <b>N</b>, and <b>X</b>, <b>Y</b> and <b>Q</b>.</p>
+</div>
+<p class="Pp">In addition to the above settings, you can change whether TREESAME
+    affects inclusion:</p>
+<p class="Pp">--dense</p>
+<div class="Bd-indent">Commits that are walked are included if they are not
+  TREESAME to any parent.</div>
+<p class="Pp">--sparse</p>
+<div class="Bd-indent">All commits that are walked are included.
+<p class="Pp">Note that without <b>--full-history</b>, this still simplifies
+    merges: if one of the parents is TREESAME, we follow only that one, so the
+    other sides of the merge are never walked.</p>
+</div>
+<p class="Pp">--simplify-merges</p>
+<div class="Bd-indent">First, build a history graph in the same way that
+  <b>--full-history</b> with parent rewriting does (see above).
+<p class="Pp">Then simplify each commit <b>C</b> to its replacement <b>C</b>' in
+    the final history according to the following rules:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;Set <b>C</b>' to <b>C</b>.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;Replace each parent <b>P</b> of <b>C</b>' with
+  its simplification <b>P</b>'. In the process, drop parents that are ancestors
+  of other parents or that are root commits TREESAME to an empty tree, and
+  remove duplicates, but take care to never drop all parents that we are
+  TREESAME to.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;If after this parent rewriting, <b>C</b>' is a
+  root or merge commit (has zero or &gt;1 parents), a boundary commit, or
+  !TREESAME, it remains. Otherwise, it is replaced with its only parent.</div>
+<p class="Pp">The effect of this is best shown by way of comparing to
+    <b>--full-history</b> with parent rewriting. The example turns into:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+          .-A---M---N---O
+<br/>
+         /     /       /
+<br/>
+        I     B       D
+<br/>
+         \   /       /
+<br/>
+          `---------'</pre>
+</div>
+<p class="Pp">Note the major differences in <b>N</b>, <b>P</b>, and <b>Q</b>
+    over <b>--full-history</b>:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>N</b>'s parent list had <b>I</b> removed,
+  because it is an ancestor of the other parent <b>M</b>. Still, <b>N</b>
+  remained because it is !TREESAME.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>P</b>'s parent list similarly had <b>I</b>
+  removed. <b>P</b> was then removed completely, because it had one parent and
+  is TREESAME.</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;<b>Q</b>'s parent list had <b>Y</b> simplified to
+  <b>X</b>. <b>X</b> was then removed, because it was a TREESAME root. <b>Q</b>
+  was then removed completely, because it had one parent and is TREESAME.</div>
+</div>
+<p class="Pp">There is another simplification mode available:</p>
+<p class="Pp">--ancestry-path[=&lt;commit&gt;]</p>
+<div class="Bd-indent">Limit the displayed commits to those which are an
+  ancestor of &lt;commit&gt;, or which are a descendant of &lt;commit&gt;, or
+  are &lt;commit&gt; itself.
+<p class="Pp">As an example use case, consider the following commit history:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+            D---E-------F
+<br/>
+           /     \       \
+<br/>
+          B---C---G---H---I---J
+<br/>
+         /                     \
+<br/>
+        A-------K---------------L--M</pre>
+</div>
+<p class="Pp">A regular <i>D..M</i> computes the set of commits that are
+    ancestors of <b>M</b>, but excludes the ones that are ancestors of <b>D</b>.
+    This is useful to see what happened to the history leading to <b>M</b> since
+    <b>D</b>, in the sense that &#x201C;what does <b>M</b> have that did not
+    exist in <b>D</b>&#x201D;. The result in this example would be all the
+    commits, except <b>A</b> and <b>B</b> (and <b>D</b> itself, of course).</p>
+<p class="Pp">When we want to find out what commits in <b>M</b> are contaminated
+    with the bug introduced by <b>D</b> and need fixing, however, we might want
+    to view only the subset of <i>D..M</i> that are actually descendants of
+    <b>D</b>, i.e. excluding <b>C</b> and <b>K</b>. This is exactly what the
+    <b>--ancestry-path</b> option does. Applied to the <i>D..M</i> range, it
+    results in:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+                E-------F
+<br/>
+                 \       \
+<br/>
+                  G---H---I---J
+<br/>
+                               \
+<br/>
+                                L--M</pre>
+</div>
+<p class="Pp">We can also use <b>--ancestry-path=D</b> instead of
+    <b>--ancestry-path</b> which means the same thing when applied to the
+    <i>D..M</i> range but is just more explicit.</p>
+<p class="Pp">If we instead are interested in a given topic within this range,
+    and all commits affected by that topic, we may only want to view the subset
+    of <b>D</b><b>..</b><b>M</b> which contain that topic in their ancestry
+    path. So, using <b>--ancestry-path=H</b> <b>D</b><b>..</b><b>M</b> for
+    example would result in:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+                E
+<br/>
+                 \
+<br/>
+              C---G---H---I---J
+<br/>
+                               \
+<br/>
+                                L--M</pre>
+</div>
+<p class="Pp">Whereas <b>--ancestry-path=K</b> <b>D</b><b>..</b><b>M</b> would
+    result in</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+                K---------------L--M</pre>
+</div>
+</div>
+<p class="Pp">Before discussing another option, <b>--show-pulls</b>, we need to
+    create a new example history.</p>
+<p class="Pp">A common problem users face when looking at simplified history is
+    that a commit they know changed a file somehow does not appear in the
+    file&#x2019;s simplified history. Let&#x2019;s demonstrate a new example and
+    show how options such as <b>--full-history</b> and <b>--simplify-merges</b>
+    works in that case:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+          .-A---M-----C--N---O---P
+<br/>
+         /     / \  \  \/   /   /
+<br/>
+        I     B   \  R-'`-Z'   /
+<br/>
+         \   /     \/         /
+<br/>
+          \ /      /\        /
+<br/>
+           `---X--'  `---Y--'</pre>
+</div>
+<p class="Pp">For this example, suppose <b>I</b> created <b>file.txt</b> which
+    was modified by <b>A</b>, <b>B</b>, and <b>X</b> in different ways. The
+    single-parent commits <b>C</b>, <b>Z</b>, and <b>Y</b> do not change
+    <b>file.txt</b>. The merge commit <b>M</b> was created by resolving the
+    merge conflict to include both changes from <b>A</b> and <b>B</b> and hence
+    is not TREESAME to either. The merge commit <b>R</b>, however, was created
+    by ignoring the contents of <b>file.txt</b> at <b>M</b> and taking only the
+    contents of <b>file.txt</b> at <b>X</b>. Hence, <b>R</b> is TREESAME to
+    <b>X</b> but not <b>M</b>. Finally, the natural merge resolution to create
+    <b>N</b> is to take the contents of <b>file.txt</b> at <b>R</b>, so <b>N</b>
+    is TREESAME to <b>R</b> but not <b>C</b>. The merge commits <b>O</b> and
+    <b>P</b> are TREESAME to their first parents, but not to their second
+    parents, <b>Z</b> and <b>Y</b> respectively.</p>
+<p class="Pp">When using the default mode, <b>N</b> and <b>R</b> both have a
+    TREESAME parent, so those edges are walked and the others are ignored. The
+    resulting history graph is:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+        I---X</pre>
+</div>
+<p class="Pp">When using <b>--full-history</b>, Git walks every edge. This will
+    discover the commits <b>A</b> and <b>B</b> and the merge <b>M</b>, but also
+    will reveal the merge commits <b>O</b> and <b>P</b>. With parent rewriting,
+    the resulting graph is:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+          .-A---M--------N---O---P
+<br/>
+         /     / \  \  \/   /   /
+<br/>
+        I     B   \  R-'`--'   /
+<br/>
+         \   /     \/         /
+<br/>
+          \ /      /\        /
+<br/>
+           `---X--'  `------'</pre>
+</div>
+<p class="Pp">Here, the merge commits <b>O</b> and <b>P</b> contribute extra
+    noise, as they did not actually contribute a change to <b>file.txt</b>. They
+    only merged a topic that was based on an older version of <b>file.txt</b>.
+    This is a common issue in repositories using a workflow where many
+    contributors work in parallel and merge their topic branches along a single
+    trunk: many unrelated merges appear in the <b>--full-history</b>
+  results.</p>
+<p class="Pp">When using the <b>--simplify-merges</b> option, the commits
+    <b>O</b> and <b>P</b> disappear from the results. This is because the
+    rewritten second parents of <b>O</b> and <b>P</b> are reachable from their
+    first parents. Those edges are removed and then the commits look like
+    single-parent commits that are TREESAME to their parent. This also happens
+    to the commit <b>N</b>, resulting in a history view as follows:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+          .-A---M--.
+<br/>
+         /     /    \
+<br/>
+        I     B      R
+<br/>
+         \   /      /
+<br/>
+          \ /      /
+<br/>
+           `---X--'</pre>
+</div>
+<p class="Pp">In this view, we see all of the important single-parent changes
+    from <b>A</b>, <b>B</b>, and <b>X</b>. We also see the carefully-resolved
+    merge <b>M</b> and the not-so-carefully-resolved merge <b>R</b>. This is
+    usually enough information to determine why the commits <b>A</b> and
+    <b>B</b> &quot;disappeared&quot; from history in the default view. However,
+    there are a few issues with this approach.</p>
+<p class="Pp">The first issue is performance. Unlike any previous option, the
+    <b>--simplify-merges</b> option requires walking the entire commit history
+    before returning a single result. This can make the option difficult to use
+    for very large repositories.</p>
+<p class="Pp">The second issue is one of auditing. When many contributors are
+    working on the same repository, it is important which merge commits
+    introduced a change into an important branch. The problematic merge <b>R</b>
+    above is not likely to be the merge commit that was used to merge into an
+    important branch. Instead, the merge <b>N</b> was used to merge <b>R</b> and
+    <b>X</b> into the important branch. This commit may have information about
+    why the change <b>X</b> came to override the changes from <b>A</b> and
+    <b>B</b> in its commit message.</p>
+<p class="Pp">--show-pulls</p>
+<div class="Bd-indent">In addition to the commits shown in the default history,
+  show each merge commit that is not TREESAME to its first parent but is
+  TREESAME to a later parent.
+<p class="Pp">When a merge commit is included by <b>--show-pulls</b>, the merge
+    is treated as if it &quot;pulled&quot; the change from another branch. When
+    using <b>--show-pulls</b> on this example (and no other options) the
+    resulting graph is:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+        I---X---R---N</pre>
+</div>
+<p class="Pp">Here, the merge commits <b>R</b> and <b>N</b> are included because
+    they pulled the commits <b>X</b> and <b>R</b> into the base branch,
+    respectively. These merges are the reason the commits <b>A</b> and <b>B</b>
+    do not appear in the default history.</p>
+<p class="Pp">When <b>--show-pulls</b> is paired with <b>--simplify-merges</b>,
+    the graph includes all of the necessary information:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+          .-A---M--.   N
+<br/>
+         /     /    \ /
+<br/>
+        I     B      R
+<br/>
+         \   /      /
+<br/>
+          \ /      /
+<br/>
+           `---X--'</pre>
+</div>
+<p class="Pp">Notice that since <b>M</b> is reachable from <b>R</b>, the edge
+    from <b>N</b> to <b>M</b> was simplified away. However, <b>N</b> still
+    appears in the history as an important commit because it &quot;pulled&quot;
+    the change <b>R</b> into the main branch.</p>
+</div>
+<p class="Pp">The <b>--simplify-by-decoration</b> option allows you to view only
+    the big picture of the topology of the history, by omitting commits that are
+    not referenced by tags. Commits are marked as !TREESAME (in other words,
+    kept after history simplification rules described above) if (1) they are
+    referenced by tags, or (2) they change the contents of the paths given on
+    the command line. All other commits are marked as TREESAME (subject to be
+    simplified away).</p>
+</section>
+<section class="Ss">
+<h2 class="Ss" id="Commit_Ordering"><a class="permalink" href="#Commit_Ordering">Commit
+  Ordering</a></h2>
+<p class="Pp">By default, the commits are shown in reverse chronological
+  order.</p>
+<p class="Pp">--date-order</p>
+<div class="Bd-indent">Show no parents before all of its children are shown, but
+  otherwise show commits in the commit timestamp order.</div>
+<p class="Pp">--author-date-order</p>
+<div class="Bd-indent">Show no parents before all of its children are shown, but
+  otherwise show commits in the author timestamp order.</div>
+<p class="Pp">--topo-order</p>
+<div class="Bd-indent">Show no parents before all of its children are shown, and
+  avoid showing commits on multiple lines of history intermixed.
+<p class="Pp">For example, in a commit history like this:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+    ---1----2----4----7
+<br/>
+        \              \
+<br/>
+         3----5----6----8---</pre>
+</div>
+<p class="Pp">where the numbers denote the order of commit timestamps,
+    <b>git</b> <b>rev-list</b> and friends with <b>--date-order</b> show the
+    commits in the timestamp order: 8 7 6 5 4 3 2 1.</p>
+<p class="Pp">With <b>--topo-order</b>, they would show 8 6 5 3 7 4 2 1 (or 8 7
+    4 2 6 5 3 1); some older commits are shown before newer ones in order to
+    avoid showing the commits from two parallel development track mixed
+    together.</p>
+</div>
+<p class="Pp">--reverse</p>
+<div class="Bd-indent">Output the commits chosen to be shown (see Commit
+  Limiting section above) in reverse order. Cannot be combined with
+  <b>--walk-reflogs</b>.</div>
+</section>
+<section class="Ss">
+<h2 class="Ss" id="Object_Traversal"><a class="permalink" href="#Object_Traversal">Object
+  Traversal</a></h2>
+<p class="Pp">These options are mostly targeted for packing of Git
+  repositories.</p>
+<p class="Pp">--no-walk[=(sorted|unsorted)]</p>
+<div class="Bd-indent">Only show the given commits, but do not traverse their
+  ancestors. This has no effect if a range is specified. If the argument
+  <b>unsorted</b> is given, the commits are shown in the order they were given
+  on the command line. Otherwise (if <b>sorted</b> or no argument was given),
+  the commits are shown in reverse chronological order by commit time. Cannot be
+  combined with <b>--graph</b>.</div>
+<p class="Pp">--do-walk</p>
+<div class="Bd-indent">Overrides a previous <b>--no-walk</b>.</div>
+</section>
+<section class="Ss">
+<h2 class="Ss" id="Commit_Formatting"><a class="permalink" href="#Commit_Formatting">Commit
+  Formatting</a></h2>
+<p class="Pp">--pretty[=&lt;format&gt;], --format=&lt;format&gt;</p>
+<div class="Bd-indent">Pretty-print the contents of the commit logs in a given
+  format, where <i>&lt;format&gt;</i> can be one of <i>oneline</i>,
+  <i>short</i>, <i>medium</i>, <i>full</i>, <i>fuller</i>, <i>reference</i>,
+  <i>email</i>, <i>raw</i>, <i>format:&lt;string&gt;</i> and
+  <i>tformat:&lt;string&gt;</i>. When <i>&lt;format&gt;</i> is none of the
+  above, and has <i>%placeholder</i> in it, it acts as if
+  <i>--pretty=tformat:&lt;format&gt;</i> were given.
+<p class="Pp">See the &quot;PRETTY FORMATS&quot; section for some additional
+    details for each format. When <i>=&lt;format&gt;</i> part is omitted, it
+    defaults to <i>medium</i>.</p>
+<p class="Pp">Note: you can specify the default pretty format in the repository
+    configuration (see <b>git-config</b>(1)).</p>
+</div>
+<p class="Pp">--abbrev-commit</p>
+<div class="Bd-indent">Instead of showing the full 40-byte hexadecimal commit
+  object name, show a prefix that names the object uniquely.
+  &quot;--abbrev=&lt;n&gt;&quot; (which also modifies diff output, if it is
+  displayed) option can be used to specify the minimum length of the prefix.
+<p class="Pp">This should make &quot;--pretty=oneline&quot; a whole lot more
+    readable for people using 80-column terminals.</p>
+</div>
+<p class="Pp">--no-abbrev-commit</p>
+<div class="Bd-indent">Show the full 40-byte hexadecimal commit object name.
+  This negates <b>--abbrev-commit</b>, either explicit or implied by other
+  options such as &quot;--oneline&quot;. It also overrides the
+  <b>log.abbrevCommit</b> variable.</div>
+<p class="Pp">--oneline</p>
+<div class="Bd-indent">This is a shorthand for &quot;--pretty=oneline
+  --abbrev-commit&quot; used together.</div>
+<p class="Pp">--encoding=&lt;encoding&gt;</p>
+<div class="Bd-indent">Commit objects record the character encoding used for the
+  log message in their encoding header; this option can be used to tell the
+  command to re-code the commit log message in the encoding preferred by the
+  user. For non plumbing commands this defaults to UTF-8. Note that if an object
+  claims to be encoded in <b>X</b> and we are outputting in <b>X</b>, we will
+  output the object verbatim; this means that invalid sequences in the original
+  commit may be copied to the output. Likewise, if iconv(3) fails to convert the
+  commit, we will quietly output the original object verbatim.</div>
+<p class="Pp">--expand-tabs=&lt;n&gt;, --expand-tabs, --no-expand-tabs</p>
+<div class="Bd-indent">Perform a tab expansion (replace each tab with enough
+  spaces to fill to the next display column that is a multiple of
+  <i>&lt;n&gt;</i>) in the log message before showing it in the output.
+  <b>--expand-tabs</b> is a short-hand for <b>--expand-tabs=8</b>, and
+  <b>--no-expand-tabs</b> is a short-hand for <b>--expand-tabs=0</b>, which
+  disables tab expansion.
+<p class="Pp">By default, tabs are expanded in pretty formats that indent the
+    log message by 4 spaces (i.e. <i>medium</i>, which is the default,
+    <i>full</i>, and <i>fuller</i>).</p>
+</div>
+<p class="Pp">--notes[=&lt;ref&gt;]</p>
+<div class="Bd-indent">Show the notes (see <b>git-notes</b>(1)) that annotate
+  the commit, when showing the commit log message. This is the default for
+  <b>git</b> <b>log</b>, <b>git</b> <b>show</b> and <b>git</b>
+  <b>whatchanged</b> commands when there is no <b>--pretty</b>, <b>--format</b>,
+  or <b>--oneline</b> option given on the command line.
+<p class="Pp">By default, the notes shown are from the notes refs listed in the
+    <b>core.notesRef</b> and <b>notes.displayRef</b> variables (or corresponding
+    environment overrides). See <b>git-config</b>(1) for more details.</p>
+<p class="Pp">With an optional <i>&lt;ref&gt;</i> argument, use the ref to find
+    the notes to display. The ref can specify the full refname when it begins
+    with <b>refs/notes/</b>; when it begins with <b>notes/</b>, <b>refs/</b> and
+    otherwise <b>refs/notes/</b> is prefixed to form the full name of the
+  ref.</p>
+<p class="Pp">Multiple --notes options can be combined to control which notes
+    are being displayed. Examples: &quot;--notes=foo&quot; will show only notes
+    from &quot;refs/notes/foo&quot;; &quot;--notes=foo --notes&quot; will show
+    both notes from &quot;refs/notes/foo&quot; and from the default notes
+    ref(s).</p>
+</div>
+<p class="Pp">--no-notes</p>
+<div class="Bd-indent">Do not show notes. This negates the above <b>--notes</b>
+  option, by resetting the list of notes refs from which notes are shown.
+  Options are parsed in the order given on the command line, so e.g.
+  &quot;--notes --notes=foo --no-notes --notes=bar&quot; will only show notes
+  from &quot;refs/notes/bar&quot;.</div>
+<p class="Pp">--show-notes-by-default</p>
+<div class="Bd-indent">Show the default notes unless options for displaying
+  specific notes are given.</div>
+<p class="Pp">--show-notes[=&lt;ref&gt;], --[no-]standard-notes</p>
+<div class="Bd-indent">These options are deprecated. Use the above
+  --notes/--no-notes options instead.</div>
+<p class="Pp">--show-signature</p>
+<div class="Bd-indent">Check the validity of a signed commit object by passing
+  the signature to <b>gpg</b> <b>--verify</b> and show the output.</div>
+<p class="Pp">--relative-date</p>
+<div class="Bd-indent">Synonym for <b>--date=relative</b>.</div>
+<p class="Pp">--date=&lt;format&gt;</p>
+<div class="Bd-indent">Only takes effect for dates shown in human-readable
+  format, such as when using <b>--pretty</b>. <b>log.date</b> config variable
+  sets a default value for the log command&#x2019;s <b>--date</b> option. By
+  default, dates are shown in the original time zone (either committer&#x2019;s
+  or author&#x2019;s). If <b>-local</b> is appended to the format (e.g.,
+  <b>iso-local</b>), the user&#x2019;s local time zone is used instead.
+<p class="Pp"><b>--date=relative</b> shows dates relative to the current time,
+    e.g. &#x201C;2 hours ago&#x201D;. The <b>-local</b> option has no effect for
+    <b>--date=relative</b>.</p>
+<p class="Pp"><b>--date=local</b> is an alias for
+  <b>--date=default-local</b>.</p>
+<p class="Pp"><b>--date=iso</b> (or <b>--date=iso8601</b>) shows timestamps in a
+    ISO 8601-like format. The differences to the strict ISO 8601 format are:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;a space instead of the <b>T</b> date/time
+  delimiter</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;a space between time and time zone</div>
+<p class="Pp"></p>
+<div class="Bd-indent">&#x2022;no colon between hours and minutes of the time
+  zone</div>
+<p class="Pp"><b>--date=iso-strict</b> (or <b>--date=iso8601-strict</b>) shows
+    timestamps in strict ISO 8601 format.</p>
+<p class="Pp"><b>--date=rfc</b> (or <b>--date=rfc2822</b>) shows timestamps in
+    RFC 2822 format, often found in email messages.</p>
+<p class="Pp"><b>--date=short</b> shows only the date, but not the time, in
+    <b>YYYY-MM-DD</b> format.</p>
+<p class="Pp"><b>--date=raw</b> shows the date as seconds since the epoch
+    (1970-01-01 00:00:00 UTC), followed by a space, and then the timezone as an
+    offset from UTC (a <b>+</b> or <b>-</b> with four digits; the first two are
+    hours, and the second two are minutes). I.e., as if the timestamp were
+    formatted with <b>strftime</b>(&quot;%s %z&quot;)). Note that the
+    <b>-local</b> option does not affect the seconds-since-epoch value (which is
+    always measured in UTC), but does switch the accompanying timezone
+  value.</p>
+<p class="Pp"><b>--date=human</b> shows the timezone if the timezone does not
+    match the current time-zone, and doesn&#x2019;t print the whole date if that
+    matches (ie skip printing year for dates that are &quot;this year&quot;, but
+    also skip the whole date itself if it&#x2019;s in the last few days and we
+    can just say what weekday it was). For older dates the hour and minute is
+    also omitted.</p>
+<p class="Pp"><b>--date=unix</b> shows the date as a Unix epoch timestamp
+    (seconds since 1970). As with <b>--raw</b>, this is always in UTC and
+    therefore <b>-local</b> has no effect.</p>
+<p class="Pp"><b>--date=format:..</b>. feeds the format <b>...</b> to your
+    system <b>strftime</b>, except for %s, %z, and %Z, which are handled
+    internally. Use <b>--date=format:</b>%c to show the date in your system
+    locale&#x2019;s preferred format. See the <b>strftime</b> manual for a
+    complete list of format placeholders. When using <b>-local</b>, the correct
+    syntax is <b>--date=format-local:..</b>..</p>
+<p class="Pp"><b>--date=default</b> is the default format, and is based on
+    ctime(3) output. It shows a single line with three-letter day of the week,
+    three-letter month, day-of-month, hour-minute-seconds in
+    &quot;HH:MM:SS&quot; format, followed by 4-digit year, plus timezone
+    information, unless the local time zone is used, e.g. <b>Thu</b> <b>Jan</b>
+    <b>1</b> <b>00:00:00</b> <b>1970</b> <b>+0000</b>.</p>
+</div>
+<p class="Pp">--parents</p>
+<div class="Bd-indent">Print also the parents of the commit (in the form
+  &quot;commit parent...&quot;). Also enables parent rewriting, see <i>History
+  Simplification</i> above.</div>
+<p class="Pp">--children</p>
+<div class="Bd-indent">Print also the children of the commit (in the form
+  &quot;commit child...&quot;). Also enables parent rewriting, see <i>History
+  Simplification</i> above.</div>
+<p class="Pp">--left-right</p>
+<div class="Bd-indent">Mark which side of a symmetric difference a commit is
+  reachable from. Commits from the left side are prefixed with &lt; and those
+  from the right with &gt;. If combined with <b>--boundary</b>, those commits
+  are prefixed with <b>-</b>.
+<p class="Pp">For example, if you have this topology:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+             y---b---b  branch B
+<br/>
+            / \ /
+<br/>
+           /   .
+<br/>
+          /   / \
+<br/>
+         o---x---a---a  branch A</pre>
+</div>
+<p class="Pp">you would get an output like this:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<pre>
+<br/>
+        $ git rev-list --left-right --boundary --pretty=oneline A...B
+<br/>
+        &gt;bbbbbbb... 3rd on b
+<br/>
+        &gt;bbbbbbb... 2nd on b
+<br/>
+        &lt;aaaaaaa... 3rd on a
+<br/>
+        &lt;aaaaaaa... 2nd on a
+<br/>
+        -yyyyyyy... 1st on b
+<br/>
+        -xxxxxxx... 1st on a</pre>
+</div>
+</div>
+<p class="Pp">--graph</p>
+<div class="Bd-indent">Draw a text-based graphical representation of the commit
+  history on the left hand side of the output. This may cause extra lines to be
+  printed in between commits, in order for the graph history to be drawn
+  properly. Cannot be combined with <b>--no-walk</b>.
+<p class="Pp">This enables parent rewriting, see <i>History Simplification</i>
+    above.</p>
+<p class="Pp">This implies the <b>--topo-order</b> option by default, but the
+    <b>--date-order</b> option may also be specified.</p>
+</div>
+<p class="Pp">--show-linear-break[=&lt;barrier&gt;]</p>
+<div class="Bd-indent">When --graph is not used, all history branches are
+  flattened which can make it hard to see that the two consecutive commits do
+  not belong to a linear branch. This option puts a barrier in between them in
+  that case. If <i>&lt;barrier&gt;</i> is specified, it is the string that will
+  be shown instead of the default one.</div>
+</section>
+</section>

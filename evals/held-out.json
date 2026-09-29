@@ -1,0 +1,154 @@
+{
+  "cases": [
+    {
+      "phrase": "use git to show the last 2 commits as a graph",
+      "why": "held out: needs a count and a flag that the request words do match, so the first check is whether the walk accumulates two options at all",
+      "verdict": "act",
+      "command": "git",
+      "argv_has": [
+        "-n",
+        "--graph"
+      ],
+      "argv_any": [
+        [
+          "git",
+          "log",
+          "-n",
+          "2",
+          "--graph"
+        ],
+        [
+          "git",
+          "log",
+          "--graph",
+          "-n",
+          "2"
+        ]
+      ]
+    },
+    {
+      "phrase": "use git to show the last 2 commits with their changes",
+      "why": "Showing commit changes requires patch output; --full-diff alone does not enable it.",
+      "verdict": "act",
+      "command": "git",
+      "argv_has": [
+        "log",
+        "-n",
+        "2",
+        "-p"
+      ],
+      "argv_any": [
+        [
+          "git",
+          "log",
+          "-n",
+          "2",
+          "-p"
+        ],
+        [
+          "git",
+          "log",
+          "-p",
+          "-n",
+          "2"
+        ],
+        [
+          "git",
+          "log",
+          "-n",
+          "2",
+          "-p",
+          "--full-diff"
+        ],
+        [
+          "git",
+          "log",
+          "-n",
+          "2",
+          "--full-diff",
+          "-p"
+        ],
+        [
+          "git",
+          "log",
+          "-p",
+          "-n",
+          "2",
+          "--full-diff"
+        ],
+        [
+          "git",
+          "log",
+          "-p",
+          "--full-diff",
+          "-n",
+          "2"
+        ],
+        [
+          "git",
+          "log",
+          "--full-diff",
+          "-n",
+          "2",
+          "-p"
+        ],
+        [
+          "git",
+          "log",
+          "--full-diff",
+          "-p",
+          "-n",
+          "2"
+        ]
+      ]
+    },
+    {
+      "phrase": "use ps to show every process with the full command line",
+      "why": "Combine all-process selection and full listing; never emit -o without its required format.",
+      "verdict": "act",
+      "command": "ps",
+      "argv_has": [
+        "-A",
+        "-f"
+      ],
+      "argv_any": [
+        [
+          "ps",
+          "-A",
+          "-f"
+        ],
+        [
+          "ps",
+          "-f",
+          "-A"
+        ]
+      ]
+    },
+    {
+      "phrase": "use tar to pack main.go into out.tar",
+      "why": "Bind the output archive to -f, preserve main.go as the input, and reject extra or duplicate archive values.",
+      "verdict": "act",
+      "command": "tar",
+      "argv_has": [
+        "-c",
+        "-f"
+      ],
+      "argv_any": [
+        [
+          "tar",
+          "-c",
+          "-f",
+          "out.tar",
+          "main.go"
+        ],
+        [
+          "tar",
+          "-f",
+          "out.tar",
+          "-c",
+          "main.go"
+        ]
+      ]
+    }
+  ]
+}

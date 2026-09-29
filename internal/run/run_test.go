@@ -63,7 +63,7 @@ func TestExecuteCapturesOutput(t *testing.T) {
 }
 
 func TestChildExitCodeIsPropagatedAsAnOutcomeNotAnError(t *testing.T) {
-	outcome, err := Do(context.Background(), []string{"ls", "/definitely-not-a-real-path-jev"}, Options{
+	outcome, err := Do(context.Background(), []string{"ls", "/definitely-not-a-real-path-ivo"}, Options{
 		Execute: true,
 		Allow:   []string{"ls"},
 		Capture: true,
@@ -104,9 +104,9 @@ func TestCapturedOutputIsTruncated(t *testing.T) {
 }
 
 func TestMissingProgramIsAnError(t *testing.T) {
-	_, err := Do(context.Background(), []string{"jev-no-such-binary"}, Options{
+	_, err := Do(context.Background(), []string{"ivo-no-such-binary"}, Options{
 		Execute: true,
-		Allow:   []string{"jev-no-such-binary"},
+		Allow:   []string{"ivo-no-such-binary"},
 		Capture: true,
 	})
 	if err == nil {

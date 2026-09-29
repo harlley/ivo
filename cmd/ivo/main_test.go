@@ -51,7 +51,7 @@ func fakeAnswers(t *testing.T, req map[string]any) map[string]any {
 			case id == "guardrail.injection" && strings.Contains(phrase, "ignore"):
 				value = 0.95
 			case strings.HasSuffix(id, "?"):
-				value = 0.02
+				value = 0.95
 			}
 			out[id] = map[string]any{"type": "noul", "noul": value}
 
@@ -67,8 +67,8 @@ func fakeAnswers(t *testing.T, req map[string]any) map[string]any {
 			pick := ""
 			switch id {
 			case "intent":
-				pick = "list_directory"
-			case "target_path":
+				pick = "ls"
+			case "operand":
 				pick = "."
 			}
 			if _, exists := criteria[pick]; pick == "" || !exists {
@@ -78,6 +78,12 @@ func fakeAnswers(t *testing.T, req map[string]any) map[string]any {
 						pick = key
 						break
 					}
+				}
+			}
+			if strings.HasPrefix(id, "discover.") {
+				pick = "none_of_these"
+				if _, exists := criteria["ls"]; exists {
+					pick = "ls"
 				}
 			}
 			if strings.HasPrefix(id, "options.") {
@@ -130,7 +136,7 @@ func fakeTypeSafe(t *testing.T) *httptest.Server {
 func newTestCLI(t *testing.T, baseURL string) {
 	t.Helper()
 	t.Setenv("TYPESAFE_API_KEY", "test-key")
-	t.Setenv("JEV_BASE_URL", baseURL)
+	t.Setenv("IVO_BASE_URL", baseURL)
 	t.Setenv("NO_COLOR", "1")
 }
 
@@ -148,7 +154,7 @@ func TestDryRunFlagShowsTheCommandAndRunsNothing(t *testing.T) {
 	if !strings.Contains(out, "ls .") {
 		t.Errorf("stdout did not show the resolved command:\n%s", out)
 	}
-	if !strings.Contains(out, "list_directory") {
+	if !strings.Contains(out, "ls") {
 		t.Errorf("stdout did not name the chosen command:\n%s", out)
 	}
 	if strings.Contains(out, "main_test.go") {
@@ -311,7 +317,7 @@ var _ = filepath.Join
 // without guessing, so it must work with no key and no network.
 func TestToolsNeedsNoKeyAndNoNetwork(t *testing.T) {
 	t.Setenv("TYPESAFE_API_KEY", "")
-	t.Setenv("JEV_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("IVO_BASE_URL", "http://127.0.0.1:1")
 	t.Setenv("NO_COLOR", "1")
 
 	var stdout, stderr bytes.Buffer
@@ -319,7 +325,7 @@ func TestToolsNeedsNoKeyAndNoNetwork(t *testing.T) {
 		t.Fatalf("exit = %d\nstderr: %s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"list_directory", "search_text", "show_file", "report_working_directory", "read_manual", "parameters:"} {
+	for _, want := range []string{"installed programs", "ls", "cat", "pwd"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("--tools output is missing %q:\n%s", want, out)
 		}
@@ -331,11 +337,11 @@ func TestToolsDetailsOneTool(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	var stdout, stderr bytes.Buffer
-	if code := realMain([]string{"--tools", "search_text"}, strings.NewReader("y\n"), &stdout, &stderr); code != exitOK {
+	if code := realMain([]string{"--tools", "ls"}, strings.NewReader("y\n"), &stdout, &stderr); code != exitOK {
 		t.Fatalf("exit = %d", code)
 	}
 	out := stdout.String()
-	for _, want := range []string{"search_text", "terms", "target", "files", "documented by", "binds to", "manual"} {
+	for _, want := range []string{"ls", "parameters", "target", "documentation", "binds to", "manual"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the tool page is missing %q:\n%s", want, out)
 		}
@@ -347,7 +353,7 @@ func TestToolsPointsAtTheManualPage(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	var stdout, stderr bytes.Buffer
-	if code := realMain([]string{"--tools", "read_manual"}, strings.NewReader("y\n"), &stdout, &stderr); code != exitOK {
+	if code := realMain([]string{"--tools", "man"}, strings.NewReader("y\n"), &stdout, &stderr); code != exitOK {
 		t.Fatalf("exit = %d", code)
 	}
 	if !strings.Contains(stdout.String(), "man ") {
@@ -363,11 +369,11 @@ func TestToolsNamesAnUnknownTool(t *testing.T) {
 	if code := realMain([]string{"--tools", "nope"}, strings.NewReader("y\n"), &stdout, &stderr); code != exitOK {
 		t.Fatalf("exit = %d", code)
 	}
-	if !strings.Contains(stderr.String(), `no tool named "nope"`) {
+	if !strings.Contains(stderr.String(), `no installed program named "nope"`) {
 		t.Errorf("stderr = %s", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "list_directory") {
-		t.Errorf("an unknown name should still show the list:\n%s", stdout.String())
+	if stdout.Len() != 0 {
+		t.Errorf("an unknown program must not print unrelated documentation:\n%s", stdout.String())
 	}
 }
 
@@ -386,5 +392,25 @@ func TestTheWalkAddsTheOptionTheRequestNeeds(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ls -l .") {
 		t.Errorf("the walk did not add the option the request needed:\n%s", stdout.String())
+	}
+}
+
+// TestVersionReportsTheBuildIdentity covers the reason the identity exists: a
+// stale binary has to be tellable apart from a fresh one, because a fixed bug
+// that still happens sends you looking in the wrong place. It happened here.
+func TestVersionReportsTheBuildIdentity(t *testing.T) {
+	oldCommit, oldBuilt := commit, builtAt
+	defer func() { commit, builtAt = oldCommit, oldBuilt }()
+
+	// A plain go build leaves the identity out rather than inventing one.
+	commit, builtAt = "", ""
+	if got := versionLine(); got != "ivo "+version {
+		t.Errorf("unstamped version = %q", got)
+	}
+
+	commit, builtAt = "32a0175+edits", "2026-09-27T18:40:07Z"
+	want := "ivo " + version + " (32a0175+edits, built 2026-09-27T18:40:07Z)"
+	if got := versionLine(); got != want {
+		t.Errorf("version line = %q, want %q", got, want)
 	}
 }

@@ -1,0 +1,402 @@
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<p class="Pp">For each operand that names a <var class="Ar">file</var> of a type
+    other than directory, <code class="Nm">ls</code> displays its name as well
+    as any requested, associated information. For each operand that names a
+    <var class="Ar">file</var> of type directory, <code class="Nm">ls</code>
+    displays the names of files contained within that directory, as well as any
+    requested, associated information.</p>
+<p class="Pp">If no operands are given, the contents of the current directory
+    are displayed. If more than one operand is given, non-directory operands are
+    displayed first; directory and non-directory operands are sorted separately
+    and in lexicographical order.</p>
+<p class="Pp">The following options are available:</p>
+<dl class="Bl-tag">
+  <dt id="@"><a class="permalink" href="#@"><code class="Fl">-@</code></a></dt>
+  <dd>Display extended attribute keys and sizes in long
+      (<code class="Fl">-l</code>) output.</dd>
+  <dt id="A"><a class="permalink" href="#A"><code class="Fl">-A</code></a></dt>
+  <dd>Include directory entries whose names begin with a dot
+      (&#x2018;<span class="Pa">.</span>&#x2019;) except for
+      <span class="Pa">.</span> and <span class="Pa">..</span>. Automatically
+      set for the super-user unless <code class="Fl">-I</code> is
+    specified.</dd>
+  <dt id="B"><a class="permalink" href="#B"><code class="Fl">-B</code></a></dt>
+  <dd>Force printing of non-printable characters (as defined by
+      <a class="Xr">ctype(3)</a> and current locale settings) in file names as
+      <code class="Li">\</code><var class="Va">xxx</var>, where
+      <var class="Va">xxx</var> is the numeric value of the character in octal.
+      This option is not defined in <span class="St">IEEE Std 1003.1-2008
+      (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="C"><a class="permalink" href="#C"><code class="Fl">-C</code></a></dt>
+  <dd>Force multi-column output; this is the default when output is to a
+      terminal.</dd>
+  <dt id="D"><a class="permalink" href="#D"><code class="Fl">-D</code></a>
+    <var class="Ar">format</var></dt>
+  <dd>When printing in the long (<code class="Fl">-l</code>) format, use
+      <var class="Ar">format</var> to format the date and time output. The
+      argument <var class="Ar">format</var> is a string used by
+      <a class="Xr">strftime(3)</a>. Depending on the choice of format string,
+      this may result in a different number of columns in the output. This
+      option overrides the <code class="Fl">-T</code> option. This option is not
+      defined in <span class="St">IEEE Std 1003.1-2008
+      (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="F"><a class="permalink" href="#F"><code class="Fl">-F</code></a></dt>
+  <dd>Display a slash (&#x2018;<code class="Li">/</code>&#x2019;) immediately
+      after each pathname that is a directory, an asterisk
+      (&#x2018;<code class="Li">*</code>&#x2019;) after each that is executable,
+      an at sign (&#x2018;<code class="Li">@</code>&#x2019;) after each symbolic
+      link, an equals sign (&#x2018;<code class="Li">=</code>&#x2019;) after
+      each socket, a percent sign (&#x2018;<code class="Li">%</code>&#x2019;)
+      after each whiteout, and a vertical bar
+      (&#x2018;<code class="Li">|</code>&#x2019;) after each that is a
+    FIFO.</dd>
+  <dt id="G"><a class="permalink" href="#G"><code class="Fl">-G</code></a></dt>
+  <dd>Enable colorized output. This option is equivalent to defining
+      <code class="Ev">CLICOLOR</code> or <code class="Ev">COLORTERM</code> in
+      the environment and setting
+      <code class="Fl">--color</code>=<var class="Ar">auto</var>. (See below.)
+      This functionality can be compiled out by removing the definition of
+      <code class="Ev">COLORLS</code>. This option is not defined in
+      <span class="St">IEEE Std 1003.1-2008
+    (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="H"><a class="permalink" href="#H"><code class="Fl">-H</code></a></dt>
+  <dd>Symbolic links on the command line are followed. This option is assumed if
+      none of the <code class="Fl">-F</code>, <code class="Fl">-d</code>, or
+      <code class="Fl">-l</code> options are specified.</dd>
+  <dt id="I"><a class="permalink" href="#I"><code class="Fl">-I</code></a></dt>
+  <dd>Prevent <code class="Fl">-A</code> from being automatically set for the
+      super-user. This option is not defined in <span class="St">IEEE Std
+      1003.1-2008 (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="L"><a class="permalink" href="#L"><code class="Fl">-L</code></a></dt>
+  <dd>Follow all symbolic links to final target and list the file or directory
+      the link references rather than the link itself. This option cancels the
+      <code class="Fl">-P</code> option.</dd>
+  <dt id="O"><a class="permalink" href="#O"><code class="Fl">-O</code></a></dt>
+  <dd>Include the file flags in a long (<code class="Fl">-l</code>) output. This
+      option is incompatible with <span class="St">IEEE Std 1003.1-2008
+      (&#x201C;POSIX.1&#x201D;)</span>. See <a class="Xr">chflags(1)</a> for a
+      list of file flags and their meanings.</dd>
+  <dt id="P"><a class="permalink" href="#P"><code class="Fl">-P</code></a></dt>
+  <dd>If argument is a symbolic link, list the link itself rather than the
+      object the link references. This option cancels the
+      <code class="Fl">-H</code> and <code class="Fl">-L</code> options.</dd>
+  <dt id="R"><a class="permalink" href="#R"><code class="Fl">-R</code></a></dt>
+  <dd>Recursively list subdirectories encountered.</dd>
+  <dt id="S"><a class="permalink" href="#S"><code class="Fl">-S</code></a></dt>
+  <dd>Sort by size (largest file first) before sorting the operands in
+      lexicographical order.</dd>
+  <dt id="T"><a class="permalink" href="#T"><code class="Fl">-T</code></a></dt>
+  <dd>When printing in the long (<code class="Fl">-l</code>) format, display
+      complete time information for the file, including month, day, hour,
+      minute, second, and year. The <code class="Fl">-D</code> option gives even
+      more control over the output format. This option is not defined in
+      <span class="St">IEEE Std 1003.1-2008
+    (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="U"><a class="permalink" href="#U"><code class="Fl">-U</code></a></dt>
+  <dd>Use time when file was created for sorting or printing. This option is not
+      defined in <span class="St">IEEE Std 1003.1-2008
+      (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="W"><a class="permalink" href="#W"><code class="Fl">-W</code></a></dt>
+  <dd>Display whiteouts when scanning directories. This option is not defined in
+      <span class="St">IEEE Std 1003.1-2008
+    (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="X"><a class="permalink" href="#X"><code class="Fl">-X</code></a></dt>
+  <dd>When listing recursively, do not descend into directories that would cross
+      file system boundaries. More specifically, this option will prevent
+      descending into directories that have a different device number.</dd>
+  <dt id="a"><a class="permalink" href="#a"><code class="Fl">-a</code></a></dt>
+  <dd>Include directory entries whose names begin with a dot
+      (&#x2018;<span class="Pa">.</span>&#x2019;).</dd>
+  <dt id="b"><a class="permalink" href="#b"><code class="Fl">-b</code></a></dt>
+  <dd>As <code class="Fl">-B</code>, but use C escape codes whenever possible.
+      This option is not defined in <span class="St">IEEE Std 1003.1-2008
+      (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="c"><a class="permalink" href="#c"><code class="Fl">-c</code></a></dt>
+  <dd>Use time when file status was last changed for sorting or printing.</dd>
+  <dt id="color"><a class="permalink" href="#color"><code class="Fl">--color</code></a>=<var class="Ar">when</var></dt>
+  <dd>Output colored escape sequences based on <var class="Ar">when</var>, which
+      may be set to either <code class="Cm">always</code>,
+      <code class="Cm">auto</code>, or <code class="Cm">never</code>.
+    <p class="Pp"><code class="Cm">always</code> will make
+        <code class="Nm">ls</code> always output color. If
+        <code class="Ev">TERM</code> is unset or set to an invalid terminal,
+        then <code class="Nm">ls</code> will fall back to explicit ANSI escape
+        sequences without the help of <a class="Xr">termcap(5)</a>.
+        <code class="Cm">always</code> is the default if
+        <code class="Fl">--color</code> is specified without an argument.</p>
+    <p class="Pp"><code class="Cm">auto</code> will make
+        <code class="Nm">ls</code> output escape sequences based on
+        <a class="Xr">termcap(5)</a>, but only if <code class="Dv">stdout</code>
+        is a tty and either the <code class="Fl">-G</code> flag is specified or
+        the <code class="Ev">COLORTERM</code> environment variable is set and
+        not empty.</p>
+    <p class="Pp"><code class="Cm">never</code> will disable color regardless of
+        environment variables. <code class="Cm">never</code> is the default when
+        neither <code class="Fl">--color</code> nor <code class="Fl">-G</code>
+        is specified.</p>
+    <p class="Pp">For compatibility with GNU coreutils,
+        <code class="Nm">ls</code> supports <code class="Cm">yes</code> or
+        <code class="Cm">force</code> as equivalent to
+        <code class="Cm">always</code>, <code class="Cm">no</code> or
+        <code class="Cm">none</code> as equivalent to
+        <code class="Cm">never</code>, and <code class="Cm">tty</code> or
+        <code class="Cm">if-tty</code> as equivalent to
+        <code class="Cm">auto</code>.</p>
+  </dd>
+  <dt id="d"><a class="permalink" href="#d"><code class="Fl">-d</code></a></dt>
+  <dd>Directories are listed as plain files (not searched recursively).</dd>
+  <dt id="e"><a class="permalink" href="#e"><code class="Fl">-e</code></a></dt>
+  <dd>Print the Access Control List (ACL) associated with the file, if present,
+      in long (<code class="Fl">-l</code>) output.</dd>
+  <dt id="f"><a class="permalink" href="#f"><code class="Fl">-f</code></a></dt>
+  <dd>Output is not sorted. This option turns on <code class="Fl">-a</code>. It
+      also negates the effect of the <code class="Fl">-r</code>,
+      <code class="Fl">-S</code> and <code class="Fl">-t</code> options. As
+      allowed by <span class="St">IEEE Std 1003.1-2008
+      (&#x201C;POSIX.1&#x201D;)</span>, this option has no effect on the
+      <code class="Fl">-d</code>, <code class="Fl">-l</code>,
+      <code class="Fl">-R</code> and <code class="Fl">-s</code> options.</dd>
+  <dt id="g"><a class="permalink" href="#g"><code class="Fl">-g</code></a></dt>
+  <dd>This option has no effect. It is only available for compatibility with
+      <span class="Ux">4.3BSD</span>, where it was used to display the group
+      name in the long (<code class="Fl">-l</code>) format output. This option
+      is incompatible with <span class="St">IEEE Std 1003.1-2008
+      (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="h"><a class="permalink" href="#h"><code class="Fl">-h</code></a></dt>
+  <dd>When used with the <code class="Fl">-l</code> option, use unit suffixes:
+      Byte, Kilobyte, Megabyte, Gigabyte, Terabyte and Petabyte in order to
+      reduce the number of digits to four or fewer using base 2 for sizes. This
+      option is not defined in <span class="St">IEEE Std 1003.1-2008
+      (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="i"><a class="permalink" href="#i"><code class="Fl">-i</code></a></dt>
+  <dd>For each file, print the file's file serial number (inode number).</dd>
+  <dt id="k"><a class="permalink" href="#k"><code class="Fl">-k</code></a></dt>
+  <dd>This has the same effect as setting environment variable
+      <code class="Ev">BLOCKSIZE</code> to 1024, except that it also nullifies
+      any <code class="Fl">-h</code> options to its left.</dd>
+  <dt id="l"><a class="permalink" href="#l"><code class="Fl">-l</code></a></dt>
+  <dd>(The lowercase letter &#x201C;ell&#x201D;.) List files in the long format,
+      as described in the <a class="Sx" href="#The_Long_Format">The Long
+      Format</a> subsection below.</dd>
+  <dt id="m"><a class="permalink" href="#m"><code class="Fl">-m</code></a></dt>
+  <dd>Stream output format; list files across the page, separated by
+    commas.</dd>
+  <dt id="n"><a class="permalink" href="#n"><code class="Fl">-n</code></a></dt>
+  <dd>Display user and group IDs numerically rather than converting to a user or
+      group name in a long (<code class="Fl">-l</code>) output. This option
+      turns on the <code class="Fl">-l</code> option.</dd>
+  <dt id="o"><a class="permalink" href="#o"><code class="Fl">-o</code></a></dt>
+  <dd>List in long format, but omit the group id.</dd>
+  <dt id="p"><a class="permalink" href="#p"><code class="Fl">-p</code></a></dt>
+  <dd>Write a slash (&#x2018;<code class="Li">/</code>&#x2019;) after each
+      filename if that file is a directory.</dd>
+  <dt id="q"><a class="permalink" href="#q"><code class="Fl">-q</code></a></dt>
+  <dd>Force printing of non-graphic characters in file names as the character
+      &#x2018;<code class="Li">?</code>&#x2019;; this is the default when output
+      is to a terminal.</dd>
+  <dt id="r"><a class="permalink" href="#r"><code class="Fl">-r</code></a></dt>
+  <dd>Reverse the order of the sort.</dd>
+  <dt id="s"><a class="permalink" href="#s"><code class="Fl">-s</code></a></dt>
+  <dd>Display the number of blocks used in the file system by each file. Block
+      sizes and directory totals are handled as described in
+      <a class="Sx" href="#The_Long_Format">The Long Format</a> subsection
+      below, except (if the long format is not also requested) the directory
+      totals are not output when the output is in a single column, even if
+      multi-column output is requested. (<code class="Fl">-l</code>) format,
+      display complete time information for the file, including month, day,
+      hour, minute, second, and year. The <code class="Fl">-D</code> option
+      gives even more control over the output format. This option is not defined
+      in <span class="St">IEEE Std 1003.1-2008
+    (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="t"><a class="permalink" href="#t"><code class="Fl">-t</code></a></dt>
+  <dd>Sort by descending time modified (most recently modified first). If two
+      files have the same modification timestamp, sort their names in ascending
+      lexicographical order. The <code class="Fl">-r</code> option reverses both
+      of these sort orders.
+    <p class="Pp">Note that these sort orders are contradictory: the time
+        sequence is in descending order, the lexicographical sort is in
+        ascending order. This behavior is mandated by <span class="St">IEEE Std
+        1003.2 (&#x201C;POSIX.2&#x201D;)</span>. This feature can cause problems
+        listing files stored with sequential names on FAT file systems, such as
+        from digital cameras, where it is possible to have more than one image
+        with the same timestamp. In such a case, the photos cannot be listed in
+        the sequence in which they were taken. To ensure the same sort order for
+        time and for lexicographical sorting, set the environment variable
+        <code class="Ev">LS_SAMESORT</code> or use the
+        <code class="Fl">-y</code> option. This causes
+        <code class="Nm">ls</code> to reverse the lexicographical sort order
+        when sorting files with the same modification timestamp.</p>
+  </dd>
+  <dt id="u"><a class="permalink" href="#u"><code class="Fl">-u</code></a></dt>
+  <dd>Use time of last access, instead of time of last modification of the file
+      for sorting (<code class="Fl">-t</code>) or long printing
+      (<code class="Fl">-l</code>).</dd>
+  <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
+  <dd>Force unedited printing of non-graphic characters; this is the default
+      when output is not to a terminal.</dd>
+  <dt id="w"><a class="permalink" href="#w"><code class="Fl">-w</code></a></dt>
+  <dd>Force raw printing of non-printable characters. This is the default when
+      output is not to a terminal. This option is not defined in
+      <span class="St">IEEE Std 1003.1-2001
+    (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="x"><a class="permalink" href="#x"><code class="Fl">-x</code></a></dt>
+  <dd>The same as <code class="Fl">-C</code>, except that the multi-column
+      output is produced with entries sorted across, rather than down, the
+      columns.</dd>
+  <dt id="y"><a class="permalink" href="#y"><code class="Fl">-y</code></a></dt>
+  <dd>When the <code class="Fl">-t</code> option is set, sort the alphabetical
+      output in the same order as the time output. This has the same effect as
+      setting <code class="Ev">LS_SAMESORT</code>. See the description of the
+      <code class="Fl">-t</code> option for more details. This option is not
+      defined in <span class="St">IEEE Std 1003.1-2001
+      (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+  <dt id="_"><a class="permalink" href="#_"><code class="Fl">-%</code></a></dt>
+  <dd>Distinguish dataless files and directories with a '%' character in long
+      (<code class="Fl">-l</code>) output, and don't materialize dataless
+      directories when listing them.</dd>
+  <dt id="1"><a class="permalink" href="#1"><code class="Fl">-1</code></a></dt>
+  <dd>(The numeric digit &#x201C;one&#x201D;.) Force output to be one entry per
+      line. This is the default when output is not to a terminal.</dd>
+  <dt><code class="Fl">-</code>,</dt>
+  <dd>(Comma) When the <code class="Fl">-l</code> option is set, print file
+      sizes grouped and separated by thousands using the non-monetary separator
+      returned by <a class="Xr">localeconv(3)</a>, typically a comma or period.
+      If no locale is set, or the locale does not have a non-monetary separator,
+      this option has no effect. This option is not defined in
+      <span class="St">IEEE Std 1003.1-2001
+    (&#x201C;POSIX.1&#x201D;)</span>.</dd>
+</dl>
+<p class="Pp">The <code class="Fl">-1</code>, <code class="Fl">-C</code>,
+    <code class="Fl">-x</code>, and <code class="Fl">-l</code> options all
+    override each other; the last one specified determines the format used.</p>
+<p class="Pp">The <code class="Fl">-c</code>, <code class="Fl">-u</code>, and
+    <code class="Fl">-U</code> options all override each other; the last one
+    specified determines the file time used.</p>
+<p class="Pp">The <code class="Fl">-S</code> and <code class="Fl">-t</code>
+    options override each other; the last one specified determines the sort
+    order used.</p>
+<p class="Pp">The <code class="Fl">-B</code>, <code class="Fl">-b</code>,
+    <code class="Fl">-w</code>, and <code class="Fl">-q</code> options all
+    override each other; the last one specified determines the format used for
+    non-printable characters.</p>
+<p class="Pp">The <code class="Fl">-H</code>, <code class="Fl">-L</code> and
+    <code class="Fl">-P</code> options all override each other (either partially
+    or fully); they are applied in the order specified.</p>
+<p class="Pp">By default, <code class="Nm">ls</code> lists one entry per line to
+    standard output; the exceptions are to terminals or when the
+    <code class="Fl">-C</code> or <code class="Fl">-x</code> options are
+    specified.</p>
+<p class="Pp">File information is displayed with one or more
+    &#x27E8;blank&#x27E9;s separating the information associated with the
+    <code class="Fl">-i</code>, <code class="Fl">-s</code>, and
+    <code class="Fl">-l</code> options.</p>
+<section class="Ss">
+<h2 class="Ss" id="The_Long_Format"><a class="permalink" href="#The_Long_Format">The
+  Long Format</a></h2>
+<p class="Pp">If the <code class="Fl">-l</code> option is given, the following
+    information is displayed for each file: file mode, number of links, owner
+    name, group name, number of bytes in the file, abbreviated month,
+    day-of-month file was last modified, hour file last modified, minute file
+    last modified, and the pathname. If the file or directory has extended
+    attributes, the permissions field printed by the <code class="Fl">-l</code>
+    option is followed by a '@' character. Otherwise, if the file or directory
+    has extended security information (such as an access control list), the
+    permissions field printed by the <code class="Fl">-l</code> option is
+    followed by a '+' character. If the <code class="Fl">-%</code> option is
+    given, a '%' character follows the permissions field for dataless files and
+    directories, possibly replacing the '@' or '+' character.</p>
+<p class="Pp">If the modification time of the file is more than 6 months in the
+    past or future, and the <code class="Fl">-D</code> or
+    <code class="Fl">-T</code> are not specified, then the year of the last
+    modification is displayed in place of the hour and minute fields.</p>
+<p class="Pp">If the owner or group names are not a known user or group name, or
+    the <code class="Fl">-n</code> option is given, the numeric ID's are
+    displayed.</p>
+<p class="Pp">If the file is a character special or block special file, the
+    device number for the file is displayed in the size field. If the file is a
+    symbolic link the pathname of the linked-to file is preceded by
+    &#x201C;<code class="Li">-&gt;</code>&#x201D;.</p>
+<p class="Pp">The listing of a directory's contents is preceded by a labeled
+    total number of blocks used in the file system by the files which are listed
+    as the directory's contents (which may or may not include
+    <span class="Pa">.</span> and <span class="Pa">..</span> and other files
+    which start with a dot, depending on other options).</p>
+<p class="Pp">The default block size is 512 bytes. The block size may be set
+    with option <code class="Fl">-k</code> or environment variable
+    <code class="Ev">BLOCKSIZE</code>. Numbers of blocks in the output will have
+    been rounded up so the numbers of bytes is at least as many as used by the
+    corresponding file system blocks (which might have a different size).</p>
+<p class="Pp">The file mode printed under the <code class="Fl">-l</code> option
+    consists of the entry type and the permissions. The entry type character
+    describes the type of file, as follows:</p>
+<p class="Pp"></p>
+<div class="Bd-indent">
+<dl class="Bl-tag Bl-compact">
+  <dt><b class="Sy">-</b></dt>
+  <dd>Regular file.</dd>
+  <dt id="b~2"><a class="permalink" href="#b~2"><b class="Sy">b</b></a></dt>
+  <dd>Block special file.</dd>
+  <dt id="c~2"><a class="permalink" href="#c~2"><b class="Sy">c</b></a></dt>
+  <dd>Character special file.</dd>
+  <dt id="d~2"><a class="permalink" href="#d~2"><b class="Sy">d</b></a></dt>
+  <dd>Directory.</dd>
+  <dt id="l~2"><a class="permalink" href="#l~2"><b class="Sy">l</b></a></dt>
+  <dd>Symbolic link.</dd>
+  <dt id="p~2"><a class="permalink" href="#p~2"><b class="Sy">p</b></a></dt>
+  <dd>FIFO.</dd>
+  <dt id="s~2"><a class="permalink" href="#s~2"><b class="Sy">s</b></a></dt>
+  <dd>Socket.</dd>
+  <dt id="w~2"><a class="permalink" href="#w~2"><b class="Sy">w</b></a></dt>
+  <dd>Whiteout.</dd>
+</dl>
+</div>
+<p class="Pp">The next three fields are three characters each: owner
+    permissions, group permissions, and other permissions. Each field has three
+    character positions:</p>
+<ol class="Bl-enum Bd-indent">
+  <li>If <b class="Sy">r</b>, the file is readable; if <b class="Sy">-</b>, it
+      is not readable.</li>
+  <li>If <b class="Sy">w</b>, the file is writable; if <b class="Sy">-</b>, it
+      is not writable.</li>
+  <li>The first of the following that applies:
+    <div class="Bd-indent">
+    <dl class="Bl-tag">
+      <dt id="S~2"><a class="permalink" href="#S~2"><b class="Sy">S</b></a></dt>
+      <dd>If in the owner permissions, the file is not executable and
+          set-user-ID mode is set. If in the group permissions, the file is not
+          executable and set-group-ID mode is set.</dd>
+      <dt id="s~3"><a class="permalink" href="#s~3"><b class="Sy">s</b></a></dt>
+      <dd>If in the owner permissions, the file is executable and set-user-ID
+          mode is set. If in the group permissions, the file is executable and
+          setgroup-ID mode is set.</dd>
+      <dt id="x~2"><a class="permalink" href="#x~2"><b class="Sy">x</b></a></dt>
+      <dd>The file is executable or the directory is searchable.</dd>
+      <dt><b class="Sy">-</b></dt>
+      <dd>The file is neither readable, writable, executable, nor set-user-ID
+          nor set-group-ID mode, nor sticky. (See below.)</dd>
+    </dl>
+    </div>
+    <p class="Pp">These next two apply only to the third character in the last
+        group (other permissions).</p>
+    <div class="Bd-indent">
+    <dl class="Bl-tag">
+      <dt id="T~2"><a class="permalink" href="#T~2"><b class="Sy">T</b></a></dt>
+      <dd>The sticky bit is set (mode <code class="Li">1000</code>), but not
+          execute or search permission. (See <a class="Xr">chmod(1)</a> or
+          <a class="Xr">sticky(7)</a>.)</dd>
+      <dt id="t~2"><a class="permalink" href="#t~2"><b class="Sy">t</b></a></dt>
+      <dd>The sticky bit is set (mode <code class="Li">1000</code>), and is
+          searchable or executable. (See <a class="Xr">chmod(1)</a> or
+          <a class="Xr">sticky(7)</a>.)</dd>
+    </dl>
+    </div>
+  </li>
+</ol>
+<p class="Pp">The next field contains a plus
+    (&#x2018;<code class="Li">+</code>&#x2019;) character if the file has an
+    ACL, or a space (&#x2018;<code class="Li"> </code>&#x2019;) if it does not.
+    The <code class="Nm">ls</code> utility does not show the actual ACL unless
+    the <code class="Fl">-e</code> option is used in conjunction with the
+    <code class="Fl">-l</code> option.</p>
+</section>
+</section>

@@ -18,6 +18,7 @@ type Program struct {
 	// documentation. Empty when the documentation was not read, which is the
 	// normal case for a candidate that only matched by name.
 	Summary string
+	Detail  string
 	// ReadOnly records that the program cannot change anything. It is decided
 	// here, in code, and it is what the gate before execution keys on.
 	ReadOnly bool
@@ -51,7 +52,8 @@ func IsReadOnly(name string) bool { return readOnlyPrograms[name] }
 // *list* commands and never to run one.
 func Commands() ([]string, error) {
 	if cached, ok := readCommandCache(); ok {
-		return cached, nil
+		// PATH and installed programs can change within the cache lifetime.
+		return cleanNames(strings.Join(cached, "\n")), nil
 	}
 
 	names := nativeCommands()
@@ -241,7 +243,7 @@ func commandCachePath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "jev", "commands.json")
+	return filepath.Join(dir, "ivo", "commands.json")
 }
 
 func readCommandCache() ([]string, bool) {

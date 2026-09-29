@@ -18,8 +18,8 @@ func TestCaseCheckRules(t *testing.T) {
 	}{
 		{
 			name:    "a matching verdict and argv pass",
-			kase:    Case{Verdict: VerdictAct, Command: "list_directory", Argv: []string{"ls", "."}},
-			outcome: Outcome{Verdict: VerdictAct, Command: "list_directory", Argv: []string{"ls", "."}},
+			kase:    Case{Verdict: VerdictAct, Command: "ls", Argv: []string{"ls", "."}},
+			outcome: Outcome{Verdict: VerdictAct, Command: "ls", Argv: []string{"ls", "."}},
 		},
 		{
 			name:    "a different verdict fails",
@@ -40,9 +40,9 @@ func TestCaseCheckRules(t *testing.T) {
 		},
 		{
 			name:    "a different command fails",
-			kase:    Case{Command: "search_text"},
-			outcome: Outcome{Verdict: VerdictAct, Command: "show_file"},
-			want:    `command is "show_file"`,
+			kase:    Case{Command: "rg"},
+			outcome: Outcome{Verdict: VerdictAct, Command: "cat"},
+			want:    `command is "cat"`,
 		},
 		{
 			name:    "argv order matters",
@@ -164,11 +164,11 @@ func TestFixtureIsStableAndCleansUp(t *testing.T) {
 
 func TestExpectationIsReadable(t *testing.T) {
 	c := Case{
-		Verdict: VerdictAct, Command: "search_text",
+		Verdict: VerdictAct, Command: "rg",
 		Has: []string{"-g", "*.go"}, NotHas: []string{"-i"}, MinConfidence: 0.7,
 	}
 	got := c.Expectation()
-	for _, want := range []string{"verdict act", "command search_text", "contains -g *.go", "without -i", ">= 0.70"} {
+	for _, want := range []string{"verdict act", "command rg", "contains -g *.go", "without -i", ">= 0.70"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Expectation() = %q, missing %q", got, want)
 		}
@@ -177,13 +177,35 @@ func TestExpectationIsReadable(t *testing.T) {
 
 func TestReportTableNamesEveryCase(t *testing.T) {
 	report := Report{Runs: 1, Results: []Result{
-		{Case: Case{Phrase: "list the files"}, Outcome: Outcome{Verdict: VerdictAct, Command: "list_directory", Argv: []string{"ls", "."}}},
+		{Case: Case{Phrase: "list the files"}, Outcome: Outcome{Verdict: VerdictAct, Command: "ls", Argv: []string{"ls", "."}}},
 		{Case: Case{Phrase: "delete everything"}, Outcome: Outcome{Verdict: VerdictUnsupported}, Failure: "verdict is unsupported"},
 	}}
 	out := report.String()
 	for _, want := range []string{"list the files", "ok", "delete everything", "FAIL"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCompleteInvocationsRejectMisleadingPartialMatches(t *testing.T) {
+	cases := []struct {
+		accepted [][]string
+		wrong    []string
+	}{
+		{[][]string{{"git", "diff"}, {"git", "diff", "--"}}, []string{"git", "diff", "changes"}},
+		{[][]string{{"ps", "-A", "-f"}}, []string{"ps", "-A", "-o"}},
+		{[][]string{{"tar", "-c", "-f", "out.tar", "main.go"}}, []string{"tar", "-f", "tar", "-c", "-f", "out.tar", "main.go"}},
+	}
+	for _, tc := range cases {
+		c := Case{ArgvAny: tc.accepted}
+		if c.Check(Outcome{Argv: tc.wrong}) == "" {
+			t.Fatalf("accepted incomplete or extra arguments: %v", tc.wrong)
+		}
+		for _, argv := range tc.accepted {
+			if failure := c.Check(Outcome{Argv: argv}); failure != "" {
+				t.Fatal(failure)
+			}
 		}
 	}
 }

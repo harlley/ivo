@@ -1,15 +1,14 @@
-// Command jev turns a phrase in natural language into a shell command.
+// Command ivo turns a phrase in natural language into a shell command.
 //
-//	jev "list all files in this directory"
+//	ivo "list all files in this directory"
 //
-// The command is never written by a language model. jev asks a System One
-// model (TypeSafe's jev) a set of typed questions about a fixed catalog of
-// commands and a fixed set of options, and this program assembles the argv
+// The command is never written by a language model. ivo asks a System One
+// model adapter (currently TypeSafe's Jev) typed questions about installed programs
+// and their documented options, and this program assembles the argv
 // from the answers.
 //
-// The command runs once the gates pass: the model was confident, the guardrails
-// were satisfied, and the catalog entry is read-only. Pass --dry-run to see the
-// resolved command without running it.
+// The resolved command is verified and shown for confirmation before execution.
+// Pass --dry-run to inspect it without running it, or --yolo to skip confirmation.
 package main
 
 import (
@@ -20,17 +19,40 @@ import (
 	"strings"
 	"time"
 
-	"github.com/harlleyoliveira/jev-cli/internal/catalog"
-	"github.com/harlleyoliveira/jev-cli/internal/env"
-	"github.com/harlleyoliveira/jev-cli/internal/resolve"
-	"github.com/harlleyoliveira/jev-cli/internal/run"
-	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
-	"github.com/harlleyoliveira/jev-cli/internal/ui"
+	"github.com/harlley/ivo/internal/catalog"
+	"github.com/harlley/ivo/internal/discover"
+	"github.com/harlley/ivo/internal/env"
+	"github.com/harlley/ivo/internal/resolve"
+	"github.com/harlley/ivo/internal/run"
+	"github.com/harlley/ivo/internal/typesafe"
+	"github.com/harlley/ivo/internal/ui"
 )
 
 // version is the released version, also settable at build time with
 // -ldflags "-X main.version=...".
 var version = "0.1.0"
+
+// commit and builtAt are the build identity, set at build time by
+// scripts/dev-run.sh. A binary that cannot say which source it came from is
+// worse than it sounds: a bug fixed after the last install keeps happening, and
+// nothing about the output tells you that you are running the old thing.
+var (
+	commit  = ""
+	builtAt = ""
+)
+
+// versionLine names the version and, when the build says so, the source it came
+// from. A plain go build leaves the identity out rather than inventing one.
+func versionLine() string {
+	if commit == "" {
+		return "ivo " + version
+	}
+	identity := commit
+	if builtAt != "" {
+		identity += ", built " + builtAt
+	}
+	return fmt.Sprintf("ivo %s (%s)", version, identity)
+}
 
 const (
 	// maxEntries caps how many directory entries go into the state.
@@ -39,7 +61,7 @@ const (
 	apiTimeout = 30 * time.Second
 )
 
-// Exit codes. 1-4 are jev-cli's own; a non-zero exit from an executed command
+// Exit codes. 1-4 are ivo's own; a non-zero exit from an executed command
 // is propagated unchanged.
 const (
 	exitOK         = 0
@@ -56,8 +78,8 @@ func main() { os.Exit(realMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	opts, phrase, err := parseArgs(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "jev: %v\n", err)
-		fmt.Fprintln(stderr, "see `jev --help`")
+		fmt.Fprintf(stderr, "ivo: %v\n", err)
+		fmt.Fprintln(stderr, "see `ivo --help`")
 		return exitUnresolved
 	}
 	if opts.help {
@@ -65,7 +87,7 @@ func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	if opts.version {
-		fmt.Fprintf(stdout, "jev %s\n", version)
+		fmt.Fprintln(stdout, versionLine())
 		return exitOK
 	}
 
@@ -75,8 +97,6 @@ func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	systemEnv, err := env.Probe(env.ProbeOptions{
 		Request:          phrase,
 		MaxEntries:       maxEntries,
-		Binaries:         catalog.Binaries(),
-		Document:         catalog.Documented(catalog.All()),
 		DiscoverCommands: true,
 	})
 	if err != nil {
@@ -92,7 +112,7 @@ func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	if strings.TrimSpace(phrase) == "" {
-		printer.Error("missing the phrase, for example: jev \"list all files in this directory\"")
+		printer.Error("missing the phrase, for example: ivo \"list all files in this directory\"")
 		return exitUnresolved
 	}
 
@@ -158,6 +178,11 @@ func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Stdout:  stdout,
 		Stderr:  stderr,
 	})
+	// The command ran because a person confirmed it, so it is a command worth
+	// asking about first next time. A nomination that was never confirmed is not:
+	// promoting one would let a wrong answer push a program up the list it was
+	// chosen from.
+	discover.Promote(decision.Argv[0])
 	if err != nil {
 		printer.Error("%v", err)
 		return exitError
@@ -177,7 +202,7 @@ func outputFilter(kind catalog.Output) func([]byte) []byte {
 // baseURL is the API host. It is an environment variable rather than a flag so
 // the CLI surface stays small, and so the tests can point at a fake server.
 func baseURL() string {
-	if v := strings.TrimSpace(os.Getenv("JEV_BASE_URL")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("IVO_BASE_URL")); v != "" {
 		return v
 	}
 	return typesafe.DefaultBaseURL
@@ -188,6 +213,17 @@ func baseURL() string {
 func renderConfirmation(p *ui.Printer, d *resolve.Decision) {
 	p.Command(ui.ShellQuote(d.Argv))
 	p.Field("command", fmt.Sprintf("%s, confidence %.2f", d.Tool.Name, d.Intent.Confidence))
+	printOptions(p, d)
+}
+
+// printOptions shows what the walk chose to add, which is part of what the
+// person is approving.
+func printOptions(p *ui.Printer, d *resolve.Decision) {
+	if len(d.Options) == 0 {
+		p.Field("options", "none")
+		return
+	}
+	p.Field("options", strings.Join(d.Options, ", "))
 }
 
 // renderDryRun prints what would run and stops.
@@ -195,6 +231,7 @@ func renderDryRun(p *ui.Printer, d *resolve.Decision) {
 	p.Command(ui.ShellQuote(d.Argv))
 	p.Field("command", fmt.Sprintf("%s, confidence %.2f", d.Tool.Name, d.Intent.Confidence))
 	p.Field("severity", fmt.Sprintf("%.2f", d.Severity))
+	printOptions(p, d)
 	printNotes(p, d)
 	p.Hint("dry-run: nothing ran. Run it again without --dry-run to be asked, or with --yolo to run straight away.")
 }
@@ -206,8 +243,8 @@ func renderNoCommand(p *ui.Printer, d *resolve.Decision, plan *resolve.Plan) int
 		p.Error("blocked: %s", d.Reason)
 	case resolve.VerdictUnsupported:
 		p.Warn("I cannot do that: %s", d.Reason)
-		p.Hint("this CLI only runs: %s", strings.Join(toolNames(plan.Tools), ", "))
-		p.Hint("see `jev --tools` for the tool list, or `jev --tools <name>` for one tool")
+		p.Hint("tools considered: %s", strings.Join(toolNames(plan.Tools), ", "))
+		p.Hint("see `ivo --tools` for the tool list, or `ivo --tools <name>` for one tool")
 	case resolve.VerdictAsk:
 		p.Warn("not going to guess: %s", d.Reason)
 		// A command that was resolved but gated is still worth showing: it is
@@ -237,7 +274,7 @@ func renderNoCommand(p *ui.Printer, d *resolve.Decision, plan *resolve.Plan) int
 	p.Field("guardrails", fmt.Sprintf("injection %.2f | destructive %.2f | clarity %.2f | severity %.2f",
 		d.Guardrails["guardrail.injection"].Noul,
 		d.Guardrails["guardrail.destructive_request"].Noul,
-		d.Guardrails["guardrail.intent_clear"].Noul,
+		d.Guardrails["guardrail.tool_is_clear"].Noul,
 		d.Severity))
 	p.Hint("nothing ran.")
 
@@ -260,47 +297,26 @@ func printNotes(p *ui.Printer, d *resolve.Decision) {
 func renderTools(p *ui.Printer, e *env.Env, query string) {
 	query = strings.TrimSpace(query)
 	if query != "" {
-		for _, tool := range catalog.All() {
-			if tool.Name == query {
-				renderTool(p, e, tool)
-				return
-			}
+		if !e.HasCommand(query) {
+			p.Warn("no installed program named %q", query)
+			return
 		}
-		p.Warn("no tool named %q", query)
+		docs := discover.Inspect(query)
+		if e.Docs == nil {
+			e.Docs = map[string]discover.Docs{}
+		}
+		e.Docs[query] = docs
+		tool := catalog.NamedProgram(discover.Program{Name: query, Summary: docs.Summary, ReadOnly: discover.IsReadOnly(query)})
+		renderTool(p, e, tool)
+		p.Field("documentation", fmt.Sprintf("%s, %d options, %d subcommands", docs.Source, len(docs.Options), len(docs.Subcommands)))
+		return
 	}
-
-	p.Title("tools (closed vocabulary)")
-	for _, tool := range catalog.All() {
-		// Availability here is about the machine, not about the phrase: this
-		// listing describes the catalog, so a tool whose candidate values
-		// happen to be empty for the current request is still a tool.
-		mark := " "
-		if !installed(tool, e) {
-			mark = "."
-		}
-		p.Line("%s %-26s %s", mark, tool.Name, firstSentence(tool.What))
-		if binding, ok := tool.Bind(e); ok {
-			p.Line("    parameters: %s", paramNames(binding.Params))
-		} else {
-			p.Line("    unavailable here: needs %s", strings.Join(tool.Needs, ", "))
-		}
+	p.Title(fmt.Sprintf("installed programs (%d)", len(e.Commands)))
+	for _, name := range e.Commands {
+		p.Line("  %s", name)
 	}
-	p.Hint("")
-	p.Hint("`jev --tools <name>` for one tool's parameters and its manual page")
-	p.Hint(". = unavailable here; everything listed is read-only")
-}
-
-// installed reports whether a tool's programs are on this machine. It is a
-// weaker question than "usable for this phrase", and it is the right one for
-// documentation.
-func installed(tool catalog.Tool, e *env.Env) bool {
-	for _, need := range tool.Needs {
-		if !e.Has(need) {
-			return false
-		}
-	}
-	_, ok := tool.Bind(e)
-	return ok
+	p.Hint("Programs are selected by purpose; naming one is optional.")
+	p.Hint("`ivo --tools <name>` for the installed program's documentation")
 }
 
 func renderTool(p *ui.Printer, e *env.Env, tool catalog.Tool) {
@@ -414,45 +430,45 @@ func parseArgs(args []string) (cliOptions, string, error) {
 			return opts, "", fmt.Errorf("unknown option: %s", arg)
 		default:
 			// Words without quotes are joined back into one phrase, so
-			// `jev list the files` works as well as `jev "list the files"`.
+			// `ivo list the files` works as well as `ivo "list the files"`.
 			phrase = append(phrase, arg)
 		}
 	}
 	return opts, strings.Join(phrase, " "), nil
 }
 
-var helpText = `jev: turn a phrase in natural language into a shell command.
+var helpText = `ivo: turn a phrase in natural language into a shell command.
 
 USAGE
-  jev [options] "phrase in natural language"
+  ivo [options] "phrase in natural language"
 
-The command is never written by a language model. jev answers typed questions
+The command is never written by a language model. ivo answers typed questions
 about the tools this machine has, and this program assembles the argv from the
 answers. It asks before running anything, unless --yolo says otherwise, and
 --dry-run shows the command without running it.
 
 EXAMPLES
-  jev "list all files in this directory"
-  jev --dry-run "how much space does this directory take"
-  jev "search for TODO in the go files"
-  jev "show the contents of README.md"
+  ivo "list all files in this directory"
+  ivo --dry-run "how much space does this directory take"
+  ivo "search for TODO in the go files"
+  ivo "show the contents of README.md"
 
 OPTIONS
   -n, --dry-run            show the resolved command and stop, running nothing
   -x, --execute            run the resolved command (already the default)
   --yolo                   run without asking for confirmation
-  --tools [NAME]           list the tools, or show one tool's parameters and
-                           the manual page to read next
+  --tools [NAME]           list installed programs, or inspect one program's
+                           parameters and documentation
   -h, --help               this help
   -V, --version            version
 
 ENVIRONMENT
   TYPESAFE_API_KEY         TypeSafe API key (required)
-  JEV_BASE_URL             API host, default ` + typesafe.DefaultBaseURL + `
+  IVO_BASE_URL             API host, default ` + typesafe.DefaultBaseURL + `
   NO_COLOR                 disable colours
 
 EXIT CODES
-  1 error, 2 unresolved (ambiguous or outside the catalog)
+  1 error, 2 unresolved (ambiguous or unsupported by discovered programs)
   3 blocked by a guardrail, 4 no API key
   the exit code of the executed command is propagated
 `

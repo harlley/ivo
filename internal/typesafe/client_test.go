@@ -32,7 +32,7 @@ func TestSystemOneSendsTheDocumentedRequest(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient("secret-key", WithBaseURL(server.URL))
-	result, err := client.SystemOne(context.Background(), SystemOneRequest{
+	result, err := client.Ask(context.Background(), SystemOneRequest{
 		State: "My payouts have been failing for 3 days.",
 		Questions: map[string]any{
 			"department": Choice("Which team should handle this?", map[string]any{

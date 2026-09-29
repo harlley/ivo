@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/harlleyoliveira/jev-cli/internal/typesafe"
+	"github.com/harlley/ivo/internal/model"
 )
 
 // Verdict names, mirroring resolve.Verdict without importing it, so a case file
@@ -45,6 +45,8 @@ type Case struct {
 	Command string `json:"command,omitempty"`
 	// Argv must match exactly, when set.
 	Argv []string `json:"argv,omitempty"`
+	// ArgvAny lists complete accepted invocations, allowing equivalent forms.
+	ArgvAny [][]string `json:"argv_any,omitempty"`
 	// Has requires every listed token to be present.
 	Has []string `json:"argv_has,omitempty"`
 	// NotHas requires every listed token to be absent.
@@ -86,6 +88,18 @@ func (c Case) Check(o Outcome) string {
 	}
 	if len(c.Argv) > 0 && !sameArgv(o.Argv, c.Argv) {
 		return fmt.Sprintf("argv is %v, want %v", o.Argv, c.Argv)
+	}
+	if len(c.ArgvAny) > 0 {
+		matched := false
+		for _, argv := range c.ArgvAny {
+			if sameArgv(o.Argv, argv) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Sprintf("argv is %v, want one of %v", o.Argv, c.ArgvAny)
+		}
 	}
 	for _, tok := range c.Has {
 		if !contains(o.Argv, tok) {
@@ -130,7 +144,8 @@ type Result struct {
 	Outcome Outcome
 	// Flags and FlagAnswers record what the flag stage decided, for diagnosis.
 	Flags       []string
-	FlagAnswers map[string]typesafe.Answer
+	FlagAnswers map[string]model.Answer
+	Offered     [][]string
 	Failure     string
 	Latency     time.Duration
 	Tokens      int
@@ -276,6 +291,9 @@ func (c Case) Expectation() string {
 	}
 	if len(c.Argv) > 0 {
 		parts = append(parts, "argv exactly "+strings.Join(c.Argv, " "))
+	}
+	if len(c.ArgvAny) > 0 {
+		parts = append(parts, fmt.Sprintf("argv one of %v", c.ArgvAny))
 	}
 	if len(c.Has) > 0 {
 		parts = append(parts, "argv contains "+strings.Join(c.Has, " "))
