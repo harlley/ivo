@@ -171,8 +171,8 @@
       ]
     },
     {
-      "phrase": "liste todos os arquivos desse diretório",
-      "why": "the phrase is not assumed to be English",
+      "phrase": "show the files in the current folder",
+      "why": "alternate wording for listing files must resolve without adding hidden-file options",
       "verdict": "act",
       "command": "ls",
       "argv_has": [

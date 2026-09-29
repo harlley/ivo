@@ -90,9 +90,18 @@ func run() int {
 	report := eval.Report{Runs: *runs}
 
 	fmt.Printf("ivo-eval: %d cases, %d run(s) each, %s\n\n", len(cases), *runs, baseURL())
+	totalRuns := len(cases) * *runs
 	for i := 0; i < *runs; i++ {
 		for _, c := range cases {
-			report.Results = append(report.Results, evaluate(client, c, *timeout))
+			fmt.Fprintf(os.Stderr, "[%d/%d] %s ... ", len(report.Results)+1, totalRuns, c.Phrase)
+			started := time.Now()
+			result := evaluate(client, c, *timeout)
+			report.Results = append(report.Results, result)
+			status := "PASS"
+			if !result.Passed() {
+				status = "FAIL"
+			}
+			fmt.Fprintf(os.Stderr, "%s (%.1fs)\n", status, time.Since(started).Seconds())
 		}
 	}
 

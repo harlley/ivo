@@ -373,8 +373,8 @@ func subcommandOptions(e *env.Env, program string) []discover.Option {
 // WordQuestion asks whether one word of the request names a program to run.
 //
 // This is the first filter, and it is the model's rather than a keyword match,
-// because a keyword match cannot tell a verb from a binary. "abra o projeto
-// atual no zed" contains one program name, and the question is asked once per
+// because a keyword match cannot tell a verb from a binary. "open the current project
+// in zed" contains one program name, and the question is asked once per
 // word, in parallel, so the whole filter costs one round trip.
 func WordQuestion(word string) model.Question {
 	return model.Noul(

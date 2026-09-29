@@ -92,7 +92,7 @@ func TestUsageBreakdown(t *testing.T) {
 			}
 			t.Logf("  %2d. %6.1f kB  in=%-7d %s", i+1, float64(s.bytes)/1024, s.inputTokens, ids)
 		}
-		t.Logf("  total de entrada: %d tokens", total)
+		t.Logf("  total input: %d tokens", total)
 	}
 }
 
